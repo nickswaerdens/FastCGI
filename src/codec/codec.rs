@@ -4,8 +4,8 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::meta::{Discrete, Meta, Stream};
 use crate::record::{
-    Empty, EncodeFrame, Header, Id, Padding, Record, StreamFragment, DEFAULT_MAX_PAYLOAD_SIZE,
-    HEADER_SIZE,
+    Empty, EncodeFrame, EncodeFrameError, Header, Id, Padding, Record, StreamFragment,
+    DEFAULT_MAX_PAYLOAD_SIZE, HEADER_SIZE,
 };
 use crate::types::RecordType;
 use crate::FCGI_VERSION_1;
@@ -48,7 +48,14 @@ impl Frame {
 #[derive(Debug)]
 pub enum EncodeCodecError {
     MaxLengthExceeded,
+    EncodeFrameError(EncodeFrameError),
     StdIoError(std::io::Error),
+}
+
+impl From<EncodeFrameError> for EncodeCodecError {
+    fn from(value: EncodeFrameError) -> Self {
+        EncodeCodecError::EncodeFrameError(value)
+    }
 }
 
 impl From<std::io::Error> for EncodeCodecError {
@@ -173,11 +180,13 @@ where
         let mut header_buf = Vec::with_capacity(8);
         header.encode_zeroed(&mut header_buf);
 
-        //let payload_start = self.buffer.len();
-        if payload.encode(&mut self.buffer).is_err() {
-            self.buffer
-                .set_position(self.buffer.remaining_read() as u64);
-        }
+        let ring_buffer_pos = self.buffer.position();
+        payload.encode(&mut self.buffer).map_err(|err| {
+            // Reset the ring buffer.
+            self.buffer.set_position(ring_buffer_pos);
+
+            EncodeCodecError::from(err)
+        })?;
 
         let content_length = self.buffer.remaining_read() as u16;
         let padding_length = header
