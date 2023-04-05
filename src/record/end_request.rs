@@ -68,7 +68,7 @@ impl DecodeFrame for EndRequest {
         }
 
         // Check that the last 3 bytes are all 0.
-        if (u64::from_be_bytes(src[..].try_into().unwrap()) << 5 * 8) > 0 {
+        if (u64::from_be_bytes(src[..].try_into().unwrap()) << (5 * 8)) > 0 {
             return Err(DecodeFrameError::CorruptedFrame);
         };
 

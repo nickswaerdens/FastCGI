@@ -6,17 +6,6 @@ use crate::meta::{Meta, Stream};
 
 use super::{DecodeFrame, DecodeFrameError, StreamFragment, StreamFragmenter};
 
-/// Custom implementation:
-/// ```
-/// enum CustomMarker {}
-///
-/// type Custom<'a> = NameValuePairs<T, CustomMarker>
-///     where T = NameValuePair<'a> | NameEmptyPair<'a>
-///
-/// impl<'a> MetaExt for Custom<'a> {
-///     ...
-/// }
-/// ```
 #[derive(Debug, Clone)]
 pub struct NameValuePairs<T: NameValuePairType, M> {
     inner: Vec<T>,

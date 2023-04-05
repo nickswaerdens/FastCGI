@@ -84,7 +84,7 @@ impl DecodeFrame for BeginRequest {
         let role = u16::from_be_bytes(src[..2].try_into().unwrap()).try_into()?;
 
         // Check if the last 5 bytes are all 0.
-        if (u64::from_be_bytes(src[..].try_into().unwrap()) << 3 * 8) > 0 {
+        if (u64::from_be_bytes(src[..].try_into().unwrap()) << (3 * 8)) > 0 {
             return Err(DecodeFrameError::CorruptedFrame);
         }
 

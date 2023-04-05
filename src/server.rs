@@ -92,12 +92,9 @@ impl<T: AsyncWrite + Unpin> Server<T> {
             }
         }
 
-        match res.stderr {
-            Some(x) => {
-                let (header, body) = x.into_record(1).into_parts();
-                self.connection.feed_stream(header, body).await?;
-            }
-            None => {}
+        if let Some(x) = res.stderr {
+            let (header, body) = x.into_record(1).into_parts();
+            self.connection.feed_stream(header, body).await?;
         }
 
         let end_request = EndRequest::new(0, ProtocolStatus::RequestComplete).into_record(1);

@@ -39,7 +39,7 @@ impl DecodeFrame for UnknownType {
         }
 
         // Check that the last 7 bytes are all 0.
-        if (u64::from_be_bytes(src[..].try_into().unwrap()) << 1 * 8) > 0 {
+        if (u64::from_be_bytes(src[..].try_into().unwrap()) << 8) > 0 {
             return Err(DecodeFrameError::CorruptedFrame);
         };
 

@@ -6,10 +6,11 @@ use crate::{
         connection::{Connection, ConnectionRecvError, ConnectionSendError},
         parser::client::ResponseParser,
     },
+    meta::{Meta, Stream},
     record::{
         begin_request::{self, Role},
         end_request::ProtocolStatus,
-        Data, IntoRecord, Params, ResponsePart, Stdin,
+        Data, IntoRecord, IntoStreamFragmentIterator, Params, ResponsePart, Stdin,
     },
     request::Request,
     response::Response,
@@ -54,8 +55,8 @@ impl<T: AsyncWrite + Unpin> Client<T> {
             }
         }
 
-        match req.role.unwrap() {
-            Role::Filter => match req.data {
+        if req.role == Some(Role::Filter) {
+            match req.data {
                 Some(x) => {
                     let (header, body) = x.into_record(1).into_parts();
                     self.connection.feed_stream(header, body).await?;
@@ -63,8 +64,7 @@ impl<T: AsyncWrite + Unpin> Client<T> {
                 None => {
                     self.connection.feed_empty::<Data>(1).await?;
                 }
-            },
-            _ => {}
+            }
         }
 
         // Make sure all the data was written out.

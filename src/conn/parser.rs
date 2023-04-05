@@ -248,17 +248,17 @@ pub mod client {
                 unimplemented!()
             }
 
-            let transition = match (frame.record_type(), frame.payload.len() > 0) {
-                (RecordType::Standard(Standard::Stdout), true) => Transition::ParseStdout(frame),
-                (RecordType::Standard(Standard::Stdout), false) => Transition::EndOfStdout,
+            let transition = match (frame.record_type(), frame.payload.is_empty()) {
+                (RecordType::Standard(Standard::Stdout), false) => Transition::ParseStdout(frame),
+                (RecordType::Standard(Standard::Stdout), true) => Transition::EndOfStdout,
 
-                (RecordType::Standard(Standard::Stderr), true) => Transition::ParseStderr(frame),
-                (RecordType::Standard(Standard::Stderr), false) => Transition::EndOfStderr,
+                (RecordType::Standard(Standard::Stderr), false) => Transition::ParseStderr(frame),
+                (RecordType::Standard(Standard::Stderr), true) => Transition::EndOfStderr,
 
-                (RecordType::Standard(Standard::EndRequest), true) => {
+                (RecordType::Standard(Standard::EndRequest), false) => {
                     Transition::ParseEndRequest(frame)
                 }
-                (RecordType::Standard(Standard::EndRequest), false) => {
+                (RecordType::Standard(Standard::EndRequest), true) => {
                     return Err(ParserError::DecodeFrameError(
                         DecodeFrameError::InsufficientDataInBuffer,
                     ))
@@ -469,17 +469,13 @@ pub mod server {
                 unimplemented!()
             }
 
-            let transition = if frame.payload.len() > 0 {
+            if !frame.payload.is_empty() {
                 Transition::Parse(frame)
+            } else if frame.record_type() == Standard::AbortRequest {
+                Transition::Abort
             } else {
-                if frame.record_type() == Standard::AbortRequest {
-                    Transition::Abort
-                } else {
-                    Transition::EndOfStream(frame.record_type())
-                }
-            };
-
-            transition
+                Transition::EndOfStream(frame.record_type())
+            }
         }
     }
 
@@ -590,9 +586,9 @@ pub mod server {
                 }
 
                 // Errors
-                (_, Transition::EndOfStream(_)) => return Err(ParserError::UnexpectedEndOfStream),
-                (_, Transition::Abort) => return Err(ParserError::UnexpectedAbortRequest),
-                _ => return Err(ParserError::InvalidState),
+                (_, Transition::EndOfStream(_)) => Err(ParserError::UnexpectedEndOfStream),
+                (_, Transition::Abort) => Err(ParserError::UnexpectedAbortRequest),
+                _ => Err(ParserError::InvalidState),
             }
         }
     }

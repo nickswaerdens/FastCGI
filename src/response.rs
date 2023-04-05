@@ -4,21 +4,11 @@ use crate::{
 };
 
 /// TODO: design API.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Response {
     pub(crate) app_status: Option<u32>,
     pub(crate) stdout: Option<Stdout>,
     pub(crate) stderr: Option<Stderr>,
-}
-
-impl Default for Response {
-    fn default() -> Self {
-        Response {
-            app_status: None,
-            stdout: None,
-            stderr: None,
-        }
-    }
 }
 
 enum ManagementResponse {

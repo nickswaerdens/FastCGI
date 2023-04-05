@@ -4,23 +4,12 @@ use crate::{
 };
 
 /// TODO: design API.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Request {
     pub(crate) role: Option<Role>,
     pub(crate) params: Option<Params>,
     pub(crate) stdin: Option<Stdin>,
     pub(crate) data: Option<Data>,
-}
-
-impl Default for Request {
-    fn default() -> Self {
-        Request {
-            role: None,
-            params: None,
-            stdin: None,
-            data: None,
-        }
-    }
 }
 
 enum ManagementRequest {

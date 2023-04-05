@@ -24,6 +24,7 @@ pub struct RingBuffer<T = Box<[u8]>> {
 
 impl RingBuffer {
     /// Allocates a new `RingBuffer` with the specified capacity.
+    #[allow(clippy::uninit_vec)]
     pub fn with_capacity(capacity: usize) -> RingBuffer {
         let mut vec = Vec::with_capacity(capacity);
         unsafe { vec.set_len(capacity) };
@@ -43,10 +44,10 @@ impl<T: AsRef<[u8]>> RingBuffer<T> {
         assert!(len & mask == 0, "mem length must be power of two");
 
         RingBuffer {
-            mem: mem,
+            mem,
             rd: 0,
             wr: 0,
-            mask: mask,
+            mask,
         }
     }
 
