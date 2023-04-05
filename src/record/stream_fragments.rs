@@ -7,7 +7,7 @@ use crate::{
     types::RecordType,
 };
 
-use super::Empty;
+use super::{Empty, EncodeFrameError};
 
 // An encoded byte slice chunk of a stream meta type T.
 #[derive(Debug, Clone)]
@@ -68,22 +68,28 @@ impl<T: Meta<DataKind = Stream>> StreamFragmenter<T> {
     }
 }
 
-pub trait IntoStreamFragmentIterator {
+pub trait EncodeFragment {
+    type Item;
+
+    fn encode_next(&mut self) -> Result<Option<Self::Item>, EncodeFrameError>;
+}
+
+pub(crate) trait IntoStreamFragmenter {
     type Item;
     type IntoIter;
 
-    fn into_fragment_iter(self) -> Self::IntoIter;
+    fn into_stream_fragmenter(self) -> Self::IntoIter;
 }
 
-impl<T> IntoStreamFragmentIterator for T
+impl<T> IntoStreamFragmenter for T
 where
     T: Meta<DataKind = Stream>,
-    StreamFragmenter<T>: Iterator,
+    StreamFragmenter<T>: EncodeFragment,
 {
     type Item = StreamFragment<T>;
     type IntoIter = StreamFragmenter<T>;
 
-    fn into_fragment_iter(self) -> Self::IntoIter {
+    fn into_stream_fragmenter(self) -> Self::IntoIter {
         StreamFragmenter {
             inner: self,
             buffer: BytesMut::new(),

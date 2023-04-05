@@ -6,8 +6,8 @@ use crate::{
     codec::{DecodeCodecError, EncodeCodecError, FastCgiCodec, Frame},
     meta::{self, Discrete, Meta},
     record::{
-        Data, Empty, EncodeFrame, EncodeFrameError, Header, Id, IntoStreamFragmentIterator, Record,
-        StreamFragment,
+        Data, Empty, EncodeFragment, EncodeFrame, EncodeFrameError, Header, Id,
+        IntoStreamFragmenter, Record, StreamFragment,
     },
 };
 
@@ -115,10 +115,15 @@ where
     ) -> Result<(), ConnectionSendError>
     where
         S: Meta<DataKind = meta::Stream>,
-        D: IntoStreamFragmentIterator,
-        D::IntoIter: Iterator<Item = StreamFragment<S>>,
+        D: IntoStreamFragmenter,
+        D::IntoIter: EncodeFragment<Item = StreamFragment<S>>,
     {
-        for fragment in data.into_fragment_iter() {
+        let mut fragmenter = data.into_stream_fragmenter();
+
+        while let Some(fragment) = fragmenter
+            .encode_next()
+            .map_err(ConnectionSendError::from)?
+        {
             self.transport
                 .feed(Record::from_parts(header, fragment))
                 .await?;

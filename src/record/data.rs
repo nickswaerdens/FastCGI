@@ -2,7 +2,10 @@ use std::{fmt, fs::File, io::Read};
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use super::{DecodeFrame, DecodeFrameError, StreamFragment, StreamFragmenter};
+use super::{
+    DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError, StreamFragment,
+    StreamFragmenter,
+};
 
 pub(crate) enum Kind {
     ByteSlice(Bytes),
@@ -52,16 +55,16 @@ impl From<File> for Data {
     }
 }
 
-impl Iterator for StreamFragmenter<Data> {
+impl EncodeFragment for StreamFragmenter<Data> {
     type Item = StreamFragment<Data>;
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn encode_next(&mut self) -> Result<Option<Self::Item>, EncodeFrameError> {
         let (data, mut buffer) = self.parts();
 
         let fragment = match &mut data.kind {
             Kind::ByteSlice(bytes) => {
                 if bytes.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
 
                 let n = buffer.remaining_mut().min(bytes.len());
@@ -78,14 +81,14 @@ impl Iterator for StreamFragmenter<Data> {
                 let n = std::io::copy(&mut handle, &mut writer).unwrap();
 
                 if n == 0 {
-                    return None;
+                    return Ok(None);
                 }
 
                 self.split_fragment()
             }
         };
 
-        Some(fragment)
+        Ok(Some(fragment))
     }
 }
 

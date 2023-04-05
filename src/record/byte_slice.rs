@@ -4,7 +4,10 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::meta::{Meta, Stream};
 
-use super::{DecodeFrame, DecodeFrameError, StreamFragment, StreamFragmenter};
+use super::{
+    DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError, StreamFragment,
+    StreamFragmenter,
+};
 
 /// Contiguous byte slice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,17 +54,17 @@ impl<T> AsRef<Bytes> for ByteSlice<T> {
     }
 }
 
-impl<T> Iterator for StreamFragmenter<ByteSlice<T>>
+impl<T> EncodeFragment for StreamFragmenter<ByteSlice<T>>
 where
     ByteSlice<T>: Meta<DataKind = Stream>,
 {
     type Item = StreamFragment<ByteSlice<T>>;
 
-    fn next(&mut self) -> Option<Self::Item> {
+    fn encode_next(&mut self) -> Result<Option<Self::Item>, EncodeFrameError> {
         let (data, mut buffer) = self.parts();
 
         if data.bytes.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let n = buffer.remaining_mut().min(data.bytes.len());
@@ -69,7 +72,7 @@ where
         buffer.get_mut().reserve(n);
         buffer.put(data.bytes.split_to(n));
 
-        Some(self.split_fragment())
+        Ok(Some(self.split_fragment()))
     }
 }
 
