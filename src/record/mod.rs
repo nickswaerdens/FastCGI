@@ -9,7 +9,7 @@ pub mod record;
 pub mod stream_fragments;
 pub mod unknown_type;
 
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 
 // Re-export
 pub(crate) use begin_request::BeginRequest;

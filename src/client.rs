@@ -6,11 +6,10 @@ use crate::{
         connection::{Connection, ConnectionRecvError, ConnectionSendError},
         parser::client::ResponseParser,
     },
-    meta::{Meta, Stream},
     record::{
         begin_request::{self, Role},
         end_request::ProtocolStatus,
-        Data, IntoRecord, IntoStreamFragmentIterator, Params, ResponsePart, Stdin,
+        Data, IntoRecord, Params, ResponsePart, Stdin,
     },
     request::Request,
     response::Response,
