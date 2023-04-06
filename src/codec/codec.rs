@@ -165,7 +165,7 @@ pub(crate) trait EncoderSpecialization<T, R = <T as Meta>::DataKind> {
 // these values are set in the header.
 impl<T> EncoderSpecialization<Record<T>, Discrete> for FastCgiCodec
 where
-    T: Meta<DataKind = Discrete> + EncodeFrame,
+    T: EncodeFrame,
 {
     fn specialized_encode(
         &mut self,
@@ -239,7 +239,7 @@ where
 
 impl<T> EncoderSpecialization<Record<Empty<T>>, Stream> for FastCgiCodec
 where
-    T: Meta<DataKind = Stream>,
+    Empty<T>: Meta<DataKind = Stream>,
 {
     fn specialized_encode(
         &mut self,

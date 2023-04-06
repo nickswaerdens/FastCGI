@@ -4,10 +4,7 @@ use bytes::{buf::Limit, Buf, BufMut, Bytes, BytesMut};
 
 use crate::meta::{Meta, Stream};
 
-use super::{
-    DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError, StreamFragment,
-    StreamFragmenter,
-};
+use super::{DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError};
 
 #[derive(Debug, Clone)]
 pub struct NameValuePairs<T: NameValuePairType, M> {
@@ -353,46 +350,44 @@ impl NameValuePairType for NameValuePair {
     }
 }
 
-impl<T, M> EncodeFragment for StreamFragmenter<NameValuePairs<T, M>>
+impl<T, M> EncodeFragment for NameValuePairs<T, M>
 where
     T: NameValuePairType,
     NameValuePairs<T, M>: Meta<DataKind = Stream>,
 {
-    type Item = StreamFragment<NameValuePairs<T, M>>;
-
-    fn encode_next(&mut self) -> Result<Option<Self::Item>, EncodeFrameError> {
-        let (data, mut buffer) = self.parts();
-
+    fn encode_fragment(
+        &mut self,
+        buf: &mut bytes::buf::Limit<&mut BytesMut>,
+    ) -> Option<Result<(), EncodeFrameError>> {
         // Make sure at least the first element fits into the buffer.
-        if let Some(size) = data.inner.first().map(|x| x.size_hint()) {
-            assert!(size <= buffer.remaining_mut());
+        if let Some(size) = self.inner.first().map(|x| x.size_hint()) {
+            assert!(size <= buf.remaining_mut());
         } else {
-            return Ok(None);
+            return None;
         }
 
         // Find the position at which the buffer can no longer fit another nvp.
         let mut size = 0;
-        let drain = match data.inner.iter().position(|nvp| {
+        let drain = match self.inner.iter().position(|nvp| {
             let hint = nvp.size_hint();
 
-            if size + hint <= buffer.remaining_mut() {
+            if size + hint <= buf.remaining_mut() {
                 size += nvp.size_hint();
                 false
             } else {
                 true
             }
         }) {
-            Some(index) => data.inner.drain(..index),
-            None => data.inner.drain(..),
+            Some(index) => self.inner.drain(..index),
+            None => self.inner.drain(..),
         };
-
-        buffer.get_mut().reserve(size);
+        buf.get_mut().reserve(size);
 
         for nvp in drain {
-            nvp.encode(&mut buffer);
+            nvp.encode(buf);
         }
 
-        Ok(Some(self.split_fragment()))
+        Some(Ok(()))
     }
 }
 

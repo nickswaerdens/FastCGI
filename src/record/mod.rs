@@ -35,7 +35,7 @@ use crate::{
 
 pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = u16::MAX as usize;
 
-pub trait EncodeFrame {
+pub trait EncodeFrame: Meta<DataKind = Discrete> {
     /// Encodes self into a fixed size RingBuffer. It's not needed to reserve any space before writing.
     fn encode(self, dst: &mut RingBuffer) -> Result<(), EncodeFrameError>;
 }

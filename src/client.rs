@@ -35,9 +35,8 @@ impl<T: AsyncWrite + Unpin> Client<T> {
         self.connection.feed_frame(begin_request).await?;
 
         match req.params {
-            Some(x) => {
-                let (header, body) = x.into_record(1).into_parts();
-                self.connection.feed_stream(header, body).await?;
+            Some(params) => {
+                self.connection.feed_stream(params.into_record(1)).await?;
             }
             None => {
                 self.connection.feed_empty::<Params>(1).await?;
@@ -45,9 +44,8 @@ impl<T: AsyncWrite + Unpin> Client<T> {
         }
 
         match req.stdin {
-            Some(x) => {
-                let (header, body) = x.into_record(1).into_parts();
-                self.connection.feed_stream(header, body).await?;
+            Some(stdin) => {
+                self.connection.feed_stream(stdin.into_record(1)).await?;
             }
             None => {
                 self.connection.feed_empty::<Stdin>(1).await?;
@@ -56,9 +54,8 @@ impl<T: AsyncWrite + Unpin> Client<T> {
 
         if req.role == Some(Role::Filter) {
             match req.data {
-                Some(x) => {
-                    let (header, body) = x.into_record(1).into_parts();
-                    self.connection.feed_stream(header, body).await?;
+                Some(data) => {
+                    self.connection.feed_stream(data.into_record(1)).await?;
                 }
                 None => {
                     self.connection.feed_empty::<Data>(1).await?;

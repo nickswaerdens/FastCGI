@@ -83,18 +83,16 @@ impl<T: AsyncRead + Unpin> Server<T> {
 impl<T: AsyncWrite + Unpin> Server<T> {
     pub async fn send_response(&mut self, res: Response) -> Result<(), ConnectionSendError> {
         match res.stdout {
-            Some(x) => {
-                let (header, body) = x.into_record(1).into_parts();
-                self.connection.feed_stream(header, body).await?;
+            Some(stdout) => {
+                self.connection.feed_stream(stdout.into_record(1)).await?;
             }
             None => {
                 self.connection.feed_empty::<Stdout>(1).await?;
             }
         }
 
-        if let Some(x) = res.stderr {
-            let (header, body) = x.into_record(1).into_parts();
-            self.connection.feed_stream(header, body).await?;
+        if let Some(stderr) = res.stderr {
+            self.connection.feed_stream(stderr.into_record(1)).await?;
         }
 
         let end_request = EndRequest::new(0, ProtocolStatus::RequestComplete).into_record(1);

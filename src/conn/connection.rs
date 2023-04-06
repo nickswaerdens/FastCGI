@@ -4,10 +4,9 @@ use tokio_util::codec::{Encoder, Framed};
 
 use crate::{
     codec::{DecodeCodecError, EncodeCodecError, FastCgiCodec, Frame},
-    meta::{self, Discrete, Meta},
+    meta::{self, Meta},
     record::{
-        Data, Empty, EncodeFragment, EncodeFrame, EncodeFrameError, Header, Id,
-        IntoStreamFragmenter, Record, StreamFragment,
+        Data, Empty, EncodeFrame, EncodeFrameError, Header, Id, IntoStreamFragmenter, Record,
     },
 };
 
@@ -95,12 +94,12 @@ where
     T: AsyncWrite + Unpin,
     P: Parser,
 {
-    pub(crate) async fn feed_frame<R>(
+    pub(crate) async fn feed_frame<D>(
         &mut self,
-        record: Record<R>,
+        record: Record<D>,
     ) -> Result<(), ConnectionSendError>
     where
-        R: EncodeFrame + Meta<DataKind = Discrete>,
+        D: EncodeFrame,
     {
         self.transport
             .feed(record)
@@ -108,42 +107,38 @@ where
             .map_err(ConnectionSendError::from)
     }
 
-    pub(crate) async fn feed_stream<D, S>(
+    pub(crate) async fn feed_stream<S>(
         &mut self,
-        header: Header,
-        data: D,
+        record: Record<S>,
     ) -> Result<(), ConnectionSendError>
     where
-        S: Meta<DataKind = meta::Stream>,
-        D: IntoStreamFragmenter,
-        D::IntoIter: EncodeFragment<Item = StreamFragment<S>>,
+        S: IntoStreamFragmenter,
     {
-        let mut fragmenter = data.into_stream_fragmenter();
+        let (header, data) = record.into_parts();
 
-        while let Some(fragment) = fragmenter
-            .encode_next()
-            .map_err(ConnectionSendError::from)?
-        {
+        for fragment in data.into_stream_fragmenter() {
+            let fragment = fragment?;
+
             self.transport
                 .feed(Record::from_parts(header, fragment))
                 .await?;
         }
 
         self.transport
-            .feed(Record::from_parts(header, StreamFragment::<S>::empty()))
+            .feed(Record::from_parts(header, Empty::<S::Item>::new()))
             .await?;
 
         Ok(())
     }
 
-    pub(crate) async fn feed_empty<S>(&mut self, id: Id) -> Result<(), ConnectionSendError>
+    pub(crate) async fn feed_empty<R>(&mut self, id: Id) -> Result<(), ConnectionSendError>
     where
-        S: Meta<DataKind = meta::Stream>,
+        Empty<R>: Meta<DataKind = meta::Stream>,
     {
         self.transport
             .feed(Record::from_parts(
-                Header::from_meta::<S>(id),
-                StreamFragment::<S>::empty(),
+                Header::from_meta::<Empty<R>>(id),
+                Empty::<R>::new(),
             ))
             .await?;
 

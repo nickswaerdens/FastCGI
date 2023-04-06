@@ -2,10 +2,7 @@ use std::{fmt, fs::File, io::Read};
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use super::{
-    DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError, StreamFragment,
-    StreamFragmenter,
-};
+use super::{DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError};
 
 pub(crate) enum Kind {
     ByteSlice(Bytes),
@@ -55,40 +52,35 @@ impl From<File> for Data {
     }
 }
 
-impl EncodeFragment for StreamFragmenter<Data> {
-    type Item = StreamFragment<Data>;
-
-    fn encode_next(&mut self) -> Result<Option<Self::Item>, EncodeFrameError> {
-        let (data, mut buffer) = self.parts();
-
-        let fragment = match &mut data.kind {
+impl EncodeFragment for Data {
+    fn encode_fragment(
+        &mut self,
+        buf: &mut bytes::buf::Limit<&mut BytesMut>,
+    ) -> Option<Result<(), EncodeFrameError>> {
+        match &mut self.kind {
             Kind::ByteSlice(bytes) => {
                 if bytes.is_empty() {
-                    return Ok(None);
+                    return None;
                 }
 
-                let n = buffer.remaining_mut().min(bytes.len());
+                let n = buf.remaining_mut().min(bytes.len());
 
-                buffer.get_mut().reserve(n);
-                buffer.put(bytes.split_to(n));
-
-                self.split_fragment()
+                buf.get_mut().reserve(n);
+                buf.put(bytes.split_to(n));
             }
             Kind::Reader(reader) => {
-                let mut handle = reader.take(buffer.remaining_mut() as u64);
-                let mut writer = buffer.writer();
+                let mut handle = reader.take(buf.remaining_mut() as u64);
+                let mut writer = buf.writer();
 
                 let n = std::io::copy(&mut handle, &mut writer).unwrap();
 
                 if n == 0 {
-                    return Ok(None);
+                    return None;
                 }
-
-                self.split_fragment()
             }
         };
 
-        Ok(Some(fragment))
+        Some(Ok(()))
     }
 }
 

@@ -7,22 +7,13 @@ use crate::{
     types::RecordType,
 };
 
-use super::{Empty, EncodeFrameError};
+use super::EncodeFrameError;
 
 // An encoded byte slice chunk of a stream meta type T.
 #[derive(Debug, Clone)]
 pub struct StreamFragment<T: Meta<DataKind = Stream>> {
     pub inner: Bytes,
     _marker: PhantomData<T>,
-}
-
-impl<T> StreamFragment<T>
-where
-    T: Meta<DataKind = Stream>,
-{
-    pub fn empty() -> Empty<Self> {
-        Empty::new()
-    }
 }
 
 impl<T: Meta<DataKind = Stream>> Meta for StreamFragment<T> {
@@ -36,7 +27,7 @@ impl<T: Meta<DataKind = Stream>> Meta for StreamFragment<T> {
 ///
 /// This allows iterators to work with stream fragments.
 #[derive(Debug)]
-pub struct StreamFragmenter<T: Meta<DataKind = Stream>> {
+pub struct StreamFragmenter<T: EncodeFragment> {
     pub inner: T,
 
     // This could be a ring buffer if we can guarantee that
@@ -47,7 +38,7 @@ pub struct StreamFragmenter<T: Meta<DataKind = Stream>> {
     _marker: PhantomData<T>,
 }
 
-impl<T: Meta<DataKind = Stream>> StreamFragmenter<T> {
+impl<T: EncodeFragment> StreamFragmenter<T> {
     /// Splits off a fragment from the current buffer.
     pub fn split_fragment(&mut self) -> StreamFragment<T> {
         assert!(self.buffer.len() <= self.max_payload_size);
@@ -58,43 +49,49 @@ impl<T: Meta<DataKind = Stream>> StreamFragmenter<T> {
         }
     }
 
-    /// Splits the StreamFragmenter into two mutually exclusive references to
-    /// modify the inner type, while also modifying the inner buffer.
-    pub fn parts(&mut self) -> (&mut T, Limit<&mut BytesMut>) {
-        (
-            &mut self.inner,
-            (&mut self.buffer).limit(self.max_payload_size),
-        )
+    pub fn encode_next(&mut self) -> Option<Result<StreamFragment<T>, EncodeFrameError>> {
+        let option = self
+            .inner
+            .encode_fragment(&mut (&mut self.buffer).limit(self.max_payload_size));
+
+        match option {
+            Some(Ok(_)) => Some(Ok(self.split_fragment())),
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
     }
 }
 
-pub trait EncodeFragment {
-    type Item;
-
-    fn encode_next(&mut self) -> Result<Option<Self::Item>, EncodeFrameError>;
+pub trait EncodeFragment: Meta<DataKind = Stream> {
+    fn encode_fragment(
+        &mut self,
+        buf: &mut Limit<&mut BytesMut>,
+    ) -> Option<Result<(), EncodeFrameError>>;
 }
 
 pub(crate) trait IntoStreamFragmenter {
-    type Item;
-    type IntoIter;
+    type Item: EncodeFragment;
 
-    fn into_stream_fragmenter(self) -> Self::IntoIter;
+    fn into_stream_fragmenter(self) -> StreamFragmenter<Self::Item>;
 }
 
-impl<T> IntoStreamFragmenter for T
-where
-    T: Meta<DataKind = Stream>,
-    StreamFragmenter<T>: EncodeFragment,
-{
-    type Item = StreamFragment<T>;
-    type IntoIter = StreamFragmenter<T>;
+impl<T: EncodeFragment> IntoStreamFragmenter for T {
+    type Item = T;
 
-    fn into_stream_fragmenter(self) -> Self::IntoIter {
+    fn into_stream_fragmenter(self) -> StreamFragmenter<Self::Item> {
         StreamFragmenter {
             inner: self,
             buffer: BytesMut::new(),
             max_payload_size: DEFAULT_MAX_PAYLOAD_SIZE,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<T: EncodeFragment> Iterator for StreamFragmenter<T> {
+    type Item = Result<StreamFragment<T>, EncodeFrameError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.encode_next()
     }
 }

@@ -4,10 +4,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::meta::{Meta, Stream};
 
-use super::{
-    DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError, StreamFragment,
-    StreamFragmenter,
-};
+use super::{DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError};
 
 /// Contiguous byte slice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,25 +51,24 @@ impl<T> AsRef<Bytes> for ByteSlice<T> {
     }
 }
 
-impl<T> EncodeFragment for StreamFragmenter<ByteSlice<T>>
+impl<T> EncodeFragment for ByteSlice<T>
 where
     ByteSlice<T>: Meta<DataKind = Stream>,
 {
-    type Item = StreamFragment<ByteSlice<T>>;
-
-    fn encode_next(&mut self) -> Result<Option<Self::Item>, EncodeFrameError> {
-        let (data, mut buffer) = self.parts();
-
-        if data.bytes.is_empty() {
-            return Ok(None);
+    fn encode_fragment(
+        &mut self,
+        buf: &mut bytes::buf::Limit<&mut BytesMut>,
+    ) -> Option<Result<(), EncodeFrameError>> {
+        if self.bytes.is_empty() {
+            return None;
         }
 
-        let n = buffer.remaining_mut().min(data.bytes.len());
+        let n = buf.remaining_mut().min(self.bytes.len());
 
-        buffer.get_mut().reserve(n);
-        buffer.put(data.bytes.split_to(n));
+        buf.get_mut().reserve(n);
+        buf.put(self.bytes.split_to(n));
 
-        Ok(Some(self.split_fragment()))
+        Some(Ok(()))
     }
 }
 
