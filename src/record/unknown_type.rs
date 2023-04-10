@@ -1,6 +1,6 @@
 use bytes::{BufMut, BytesMut};
 
-use crate::codec::RingBuffer;
+use crate::codec::Buffer;
 
 use super::{DecodeFrame, DecodeFrameError, EncodeFrame, EncodeFrameError};
 
@@ -14,13 +14,13 @@ impl UnknownType {
         Self { record_type }
     }
 
-    pub fn record_type(&self) -> u8 {
+    pub fn get_record_type(&self) -> u8 {
         self.record_type
     }
 }
 
 impl EncodeFrame for UnknownType {
-    fn encode(self, dst: &mut RingBuffer) -> Result<(), EncodeFrameError> {
+    fn encode(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
         if dst.remaining_mut() < 8 {
             return Err(EncodeFrameError::InsufficientSizeInBuffer);
         }

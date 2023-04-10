@@ -6,8 +6,8 @@ use crate::{
         parser::server::RequestParser,
     },
     record::{
-        begin_request::Role, end_request::ProtocolStatus, EndRequest, IntoRecord, RequestPart,
-        Stdout,
+        begin_request::Role, end_request::ProtocolStatus, EndRequest, Header, IntoRecord,
+        RequestPart, Stdout,
     },
     request::Request,
     response::Response,
@@ -38,7 +38,7 @@ impl<T: AsyncRead + Unpin> Server<T> {
             match self.connection.poll_frame().await {
                 Some(Ok(Some(req))) => match req {
                     BeginRequest(x) => {
-                        request.role = Some(x.role());
+                        request.role = Some(x.get_role());
                     }
                     AbortRequest(_) => {
                         self.connection.close_stream();
@@ -82,21 +82,26 @@ impl<T: AsyncRead + Unpin> Server<T> {
 
 impl<T: AsyncWrite + Unpin> Server<T> {
     pub async fn send_response(&mut self, res: Response) -> Result<(), ConnectionSendError> {
+        let header = Header::new(1);
+
         match res.stdout {
             Some(stdout) => {
-                self.connection.feed_stream(stdout.into_record(1)).await?;
+                self.connection
+                    .feed_stream(stdout.into_record(header))
+                    .await?;
             }
             None => {
-                self.connection.feed_empty::<Stdout>(1).await?;
+                self.connection.feed_empty::<Stdout>(header).await?;
             }
         }
 
         if let Some(stderr) = res.stderr {
-            self.connection.feed_stream(stderr.into_record(1)).await?;
+            self.connection
+                .feed_stream(stderr.into_record(header))
+                .await?;
         }
 
-        let end_request = EndRequest::new(0, ProtocolStatus::RequestComplete).into_record(1);
-
+        let end_request = EndRequest::new(0, ProtocolStatus::RequestComplete).into_record(header);
         self.connection.feed_frame(end_request).await?;
 
         // Make sure all the data was written out.

@@ -1,9 +1,9 @@
-use crate::types::{Custom, RecordType};
+use crate::record::{Custom, RecordType};
 
 mod private {
     use crate::record::{
         AbortRequest, BeginRequest, Data, Empty, EndRequest, GetValues, GetValuesResult, Params,
-        Stderr, Stdin, Stdout, StreamFragment, UnknownType,
+        Stderr, Stdin, Stdout, UnknownType,
     };
 
     use super::*;
@@ -22,8 +22,6 @@ mod private {
     impl Sealed for GetValues {}
     impl Sealed for GetValuesResult {}
     impl Sealed for UnknownType {}
-
-    impl<T: Meta<DataKind = Stream>> Sealed for StreamFragment<T> {}
 
     // Empty stream records.
     impl<T: Meta<DataKind = Stream>> Sealed for Empty<T> {}
@@ -59,31 +57,23 @@ impl<T: MetaExt<SentBy = Server>> DynResponseMetaExt for T {}
 /// Specifies whether the record is sent by a `Server` or `Client`.
 /// `Client (BeginRequest...) -> Server (...EndRequest) -> Client`
 pub trait SentBy: private::Sealed {}
-
 pub enum Server {}
 pub enum Client {}
-
 impl SentBy for Server {}
 impl SentBy for Client {}
 
 /// Specifies whether the record is a `Management` or `Application` type.
 pub trait RecordKind: private::Sealed {}
-
 pub enum Application {}
 pub enum Management {}
-
 impl RecordKind for Application {}
-
 impl RecordKind for Management {}
 
 /// Specifies whether the record is a `Discrete` or `Stream` type.
 pub trait DataKind: private::Sealed {}
-
 pub enum Discrete {}
 pub enum Stream {}
-
 impl DataKind for Discrete {}
-
 impl DataKind for Stream {}
 
 /// `MetaExt` records can only be of record kind `Management`.
@@ -92,7 +82,7 @@ pub trait MetaExt {
     const TYPE: Custom;
     type SentBy: SentBy;
     type DataKind: DataKind;
-    type Dual; //: MetaExt + ParseFrame;
+    type Dual; //: MetaExt + DecodeFrame;
 }
 
 // Implement `Meta` for extended record types.

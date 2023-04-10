@@ -1,7 +1,7 @@
 use bytes::{BufMut, BytesMut};
 
 use crate::{
-    codec::RingBuffer,
+    codec::Buffer,
     record::{DecodeFrame, EncodeFrame},
 };
 
@@ -36,33 +36,41 @@ pub struct BeginRequest {
 }
 
 impl BeginRequest {
-    pub fn new(role: Role, keep_conn: bool) -> Self {
-        Self { role, keep_conn }
+    pub fn new(role: Role) -> Self {
+        Self {
+            role,
+            keep_conn: false,
+        }
     }
 
-    pub fn new_responder(keep_conn: bool) -> Self {
-        Self::new(Role::Responder, keep_conn)
+    pub fn new_responder() -> Self {
+        Self::new(Role::Responder)
     }
 
-    pub fn new_authorizer(keep_conn: bool) -> Self {
-        Self::new(Role::Authorizer, keep_conn)
+    pub fn new_authorizer() -> Self {
+        Self::new(Role::Authorizer)
     }
 
-    pub fn new_filter(keep_conn: bool) -> Self {
-        Self::new(Role::Filter, keep_conn)
+    pub fn new_filter() -> Self {
+        Self::new(Role::Filter)
     }
 
-    pub fn role(&self) -> Role {
+    pub fn keep_conn(mut self) -> Self {
+        self.keep_conn = true;
+        self
+    }
+
+    pub fn get_role(&self) -> Role {
         self.role
     }
 
-    pub fn keep_conn(&self) -> bool {
+    pub fn get_keep_conn(&self) -> bool {
         self.keep_conn
     }
 }
 
 impl EncodeFrame for BeginRequest {
-    fn encode(self, dst: &mut RingBuffer) -> Result<(), EncodeFrameError> {
+    fn encode(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
         if dst.remaining_mut() < 8 {
             return Err(EncodeFrameError::InsufficientSizeInBuffer);
         }
@@ -88,6 +96,12 @@ impl DecodeFrame for BeginRequest {
             return Err(DecodeFrameError::CorruptedFrame);
         }
 
-        Ok(BeginRequest::new(role, src[2] > 0))
+        let begin_request = BeginRequest::new(role);
+
+        if src[2] > 0 {
+            Ok(begin_request.keep_conn())
+        } else {
+            Ok(begin_request)
+        }
     }
 }

@@ -4,8 +4,7 @@ use bytes::{BufMut, BytesMut};
 
 use crate::{
     meta::{Meta, Stream},
-    record::{DecodeFrame, DecodeFrameError, RequestPart, ResponsePart},
-    types::RecordType,
+    record::{DecodeFrame, DecodeFrameError, RecordType, RequestPart, ResponsePart},
 };
 
 use crate::codec::Frame;
@@ -118,18 +117,21 @@ impl Full {
         self
     }
 
-    pub fn insert_frame(&mut self, frame: Frame) {
+    fn insert_frame(&mut self, frame: Frame) {
         let n = frame.payload.len();
 
         if self.max_total_payload < self.current_total_payload + n {
             todo!();
         }
 
+        // Make sure the frames belong to the same record.
         if !self.frames.is_empty() {
             let first = &self.frames[0];
 
-            if first.id() != frame.id() || first.record_type() != frame.record_type() {
-                todo!();
+            if first.get_id() != frame.get_id()
+                || first.get_record_type() != frame.get_record_type()
+            {
+                todo!()
             }
         }
 
@@ -137,7 +139,7 @@ impl Full {
         self.current_total_payload += n;
     }
 
-    pub fn merge_frames(&mut self) -> Option<Frame> {
+    fn merge_frames(&mut self) -> Option<Frame> {
         if self.frames.is_empty() {
             return None;
         }
@@ -212,8 +214,10 @@ where
 pub mod client {
     use crate::{
         codec::Frame,
-        record::{DecodeFrame, DecodeFrameError, EndRequest, ResponsePart, Stderr, Stdout},
-        types::{RecordType, Standard},
+        record::{
+            DecodeFrame, DecodeFrameError, EndRequest, RecordType, ResponsePart, Standard, Stderr,
+            Stdout,
+        },
     };
 
     use super::{
@@ -244,11 +248,11 @@ pub mod client {
 
     impl Transition {
         pub(crate) fn parse(frame: Frame) -> ParserResult<Transition> {
-            if frame.id() == 0 {
+            if frame.get_id() == 0 {
                 unimplemented!()
             }
 
-            let transition = match (frame.record_type(), frame.payload.is_empty()) {
+            let transition = match (frame.get_record_type(), frame.payload.is_empty()) {
                 (RecordType::Standard(Standard::Stdout), false) => Transition::ParseStdout(frame),
                 (RecordType::Standard(Standard::Stdout), true) => Transition::EndOfStdout,
 
@@ -427,10 +431,9 @@ pub mod server {
     use crate::{
         codec::Frame,
         record::{
-            begin_request::Role, AbortRequest, BeginRequest, Data, DecodeFrame, Params,
-            RequestPart, Stdin,
+            begin_request::Role, AbortRequest, BeginRequest, Data, DecodeFrame, Params, RecordType,
+            RequestPart, Standard, Stdin,
         },
-        types::{RecordType, Standard},
     };
 
     use super::{
@@ -465,16 +468,16 @@ pub mod server {
 
     impl Transition {
         pub(crate) fn parse(frame: Frame) -> Transition {
-            if frame.id() == 0 {
+            if frame.get_id() == 0 {
                 unimplemented!()
             }
 
             if !frame.payload.is_empty() {
                 Transition::Parse(frame)
-            } else if frame.record_type() == Standard::AbortRequest {
+            } else if frame.get_record_type() == Standard::AbortRequest {
                 Transition::Abort
             } else {
-                Transition::EndOfStream(frame.record_type())
+                Transition::EndOfStream(frame.get_record_type())
             }
         }
     }
@@ -524,14 +527,14 @@ pub mod server {
 
                     let begin_request = BeginRequest::decode(payload)?;
 
-                    state.role = Some(begin_request.role());
+                    state.role = Some(begin_request.get_role());
                     state.inner = State::Params;
 
                     Ok(Some(begin_request.into()))
                 }
 
                 (State::Params, Transition::Parse(frame)) => {
-                    validate_record_type(frame.record_type(), Standard::Params)?;
+                    validate_record_type(frame.get_record_type(), Standard::Params)?;
 
                     handle_parse_frame::<Params, _>(frame, &mut state.mode)
                 }
@@ -546,7 +549,7 @@ pub mod server {
                 }
 
                 (State::Stdin, Transition::Parse(frame)) => {
-                    validate_record_type(frame.record_type(), Standard::Stdin)?;
+                    validate_record_type(frame.get_record_type(), Standard::Stdin)?;
 
                     handle_parse_frame::<Stdin, _>(frame, &mut state.mode)
                 }
@@ -564,7 +567,7 @@ pub mod server {
                 }
 
                 (State::Data, Transition::Parse(frame)) => {
-                    validate_record_type(frame.record_type(), Standard::Data)?;
+                    validate_record_type(frame.get_record_type(), Standard::Data)?;
 
                     handle_parse_frame::<Data, _>(frame, &mut state.mode)
                 }
@@ -582,7 +585,7 @@ pub mod server {
                 (State::Params | State::Stdin | State::Data, Transition::Abort) => {
                     state.inner = State::Aborted;
 
-                    Ok(Some(AbortRequest::new().into()))
+                    Ok(Some(AbortRequest.into()))
                 }
 
                 // Errors

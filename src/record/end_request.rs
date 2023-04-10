@@ -1,6 +1,6 @@
 use bytes::{BufMut, BytesMut};
 
-use crate::codec::RingBuffer;
+use crate::codec::Buffer;
 
 use super::{DecodeFrame, DecodeFrameError, EncodeFrame, EncodeFrameError};
 
@@ -38,17 +38,17 @@ impl EndRequest {
         }
     }
 
-    pub fn app_status(&self) -> u32 {
+    pub fn get_app_status(&self) -> u32 {
         self.app_status
     }
 
-    pub fn protocol_status(&self) -> ProtocolStatus {
+    pub fn get_protocol_status(&self) -> ProtocolStatus {
         self.protocol_status
     }
 }
 
 impl EncodeFrame for EndRequest {
-    fn encode(self, dst: &mut RingBuffer) -> Result<(), EncodeFrameError> {
+    fn encode(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
         if dst.remaining_mut() < 8 {
             return Err(EncodeFrameError::InsufficientSizeInBuffer);
         }

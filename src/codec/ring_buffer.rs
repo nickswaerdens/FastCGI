@@ -11,7 +11,7 @@ use std::fmt;
 ///
 /// When writing reaches the end of the memory, writing resume at the beginning
 /// of the memory. Writes may never overwrite pending reads.
-pub struct RingBuffer<T = Box<[u8]>> {
+pub(crate) struct RingBuffer<T = Box<[u8]>> {
     // Contiguous memory
     mem: T,
     // Current read position

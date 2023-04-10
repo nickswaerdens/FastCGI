@@ -1,4 +1,3 @@
-use begin_request::BeginRequest;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
@@ -7,9 +6,8 @@ use crate::{
         parser::client::ResponseParser,
     },
     record::{
-        begin_request::{self, Role},
-        end_request::ProtocolStatus,
-        Data, IntoRecord, Params, ResponsePart, Stdin,
+        begin_request::Role, end_request::ProtocolStatus, BeginRequest, Data, Header, IntoRecord,
+        Params, ResponsePart, Stdin,
     },
     request::Request,
     response::Response,
@@ -30,35 +28,42 @@ impl<T: AsyncRead + AsyncWrite> Client<T> {
 
 impl<T: AsyncWrite + Unpin> Client<T> {
     pub async fn send_request(&mut self, req: Request) -> Result<(), ConnectionSendError> {
-        let begin_request = BeginRequest::new_filter(true).into_record(1);
+        let header = Header::new(1);
 
+        let begin_request = BeginRequest::new_filter().keep_conn().into_record(header);
         self.connection.feed_frame(begin_request).await?;
 
         match req.params {
             Some(params) => {
-                self.connection.feed_stream(params.into_record(1)).await?;
+                self.connection
+                    .feed_stream(params.into_record(header))
+                    .await?;
             }
             None => {
-                self.connection.feed_empty::<Params>(1).await?;
+                self.connection.feed_empty::<Params>(header).await?;
             }
         }
 
         match req.stdin {
             Some(stdin) => {
-                self.connection.feed_stream(stdin.into_record(1)).await?;
+                self.connection
+                    .feed_stream(stdin.into_record(header))
+                    .await?;
             }
             None => {
-                self.connection.feed_empty::<Stdin>(1).await?;
+                self.connection.feed_empty::<Stdin>(header).await?;
             }
         }
 
         if req.role == Some(Role::Filter) {
             match req.data {
                 Some(data) => {
-                    self.connection.feed_stream(data.into_record(1)).await?;
+                    self.connection
+                        .feed_stream(data.into_record(header))
+                        .await?;
                 }
                 None => {
-                    self.connection.feed_empty::<Data>(1).await?;
+                    self.connection.feed_empty::<Data>(header).await?;
                 }
             }
         }
@@ -87,9 +92,9 @@ impl<T: AsyncRead + Unpin> Client<T> {
                         response.stderr = Some(x);
                     }
                     EndRequest(end_request) => {
-                        match end_request.protocol_status() {
+                        match end_request.get_protocol_status() {
                             ProtocolStatus::RequestComplete => {
-                                response.app_status = Some(end_request.app_status());
+                                response.app_status = Some(end_request.get_app_status());
 
                                 break;
                             }

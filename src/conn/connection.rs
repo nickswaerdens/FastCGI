@@ -1,13 +1,11 @@
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_util::codec::{Encoder, Framed};
+use tokio_util::codec::Framed;
 
 use crate::{
     codec::{DecodeCodecError, EncodeCodecError, FastCgiCodec, Frame},
     meta::{self, Meta},
-    record::{
-        Data, Empty, EncodeFrame, EncodeFrameError, Header, Id, IntoStreamFragmenter, Record,
-    },
+    record::{Empty, EncodeFrame, EncodeFrameError, Header, IntoStreamChunker, Record},
 };
 
 use super::{
@@ -37,7 +35,7 @@ impl<T, P> Connection<T, P>
 where
     P: Parser,
 {
-    pub(crate) fn close_stream(&mut self) {
+    pub fn close_stream(&mut self) {
         // TODO
         self.streams = None;
 
@@ -51,9 +49,7 @@ where
     P: Parser,
 {
     /// Poll for the next, parsed frame.
-    pub(crate) async fn poll_frame(
-        &mut self,
-    ) -> Option<Result<Option<P::Output>, ConnectionRecvError>> {
+    pub async fn poll_frame(&mut self) -> Option<Result<Option<P::Output>, ConnectionRecvError>> {
         loop {
             let frame = match self.transport.next().await {
                 Some(Ok(x)) => x,
@@ -94,10 +90,7 @@ where
     T: AsyncWrite + Unpin,
     P: Parser,
 {
-    pub(crate) async fn feed_frame<D>(
-        &mut self,
-        record: Record<D>,
-    ) -> Result<(), ConnectionSendError>
+    pub async fn feed_frame<D>(&mut self, record: Record<D>) -> Result<(), ConnectionSendError>
     where
         D: EncodeFrame,
     {
@@ -107,50 +100,43 @@ where
             .map_err(ConnectionSendError::from)
     }
 
-    pub(crate) async fn feed_stream<S>(
-        &mut self,
-        record: Record<S>,
-    ) -> Result<(), ConnectionSendError>
+    pub async fn feed_stream<S>(&mut self, record: Record<S>) -> Result<(), ConnectionSendError>
     where
-        S: IntoStreamFragmenter,
+        S: IntoStreamChunker,
     {
-        let (header, data) = record.into_parts();
+        let mut record = record.map(|body| body.into_stream_chunker());
 
-        for fragment in data.into_stream_fragmenter() {
-            let fragment = fragment?;
+        loop {
+            if record.body.is_empty() {
+                break;
+            }
 
-            self.transport
-                .feed(Record::from_parts(header, fragment))
-                .await?;
+            self.transport.feed(&mut record).await?;
         }
 
-        self.transport
-            .feed(Record::from_parts(header, Empty::<S::Item>::new()))
-            .await?;
+        let empty_record = record.map(|_| Empty::<S::Inner>::new());
 
-        Ok(())
+        self.transport
+            .feed(empty_record)
+            .await
+            .map_err(ConnectionSendError::from)
     }
 
-    pub(crate) async fn feed_empty<R>(&mut self, id: Id) -> Result<(), ConnectionSendError>
+    pub(crate) async fn feed_empty<S>(&mut self, header: Header) -> Result<(), ConnectionSendError>
     where
-        Empty<R>: Meta<DataKind = meta::Stream>,
+        S: Meta<DataKind = meta::Stream>,
     {
-        self.transport
-            .feed(Record::from_parts(
-                Header::from_meta::<Empty<R>>(id),
-                Empty::<R>::new(),
-            ))
-            .await?;
+        let record = Record::from_parts(header, Empty::<S>::new());
 
-        Ok(())
+        self.transport
+            .feed(record)
+            .await
+            .map_err(ConnectionSendError::from)
     }
 
-    pub(crate) async fn flush(&mut self) -> Result<(), ConnectionSendError>
-    where
-        FastCgiCodec: Encoder<Record<Empty<Data>>>,
-    {
-        // TODO: Figure out this type annotation, currently set to Empty<Data> as it doesn't appear to do anything.
-        <Framed<T, FastCgiCodec> as SinkExt<Record<Empty<Data>>>>::flush(&mut self.transport)
+    pub(crate) async fn flush(&mut self) -> Result<(), ConnectionSendError> {
+        // TODO: Figure out this necessary type annotation, currently set to () as it doesn't appear to do anything.
+        <Framed<T, FastCgiCodec> as SinkExt<()>>::flush(&mut self.transport)
             .await
             .map_err(ConnectionSendError::from)
     }

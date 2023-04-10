@@ -6,7 +6,6 @@ pub mod record;
 pub mod request;
 pub mod response;
 pub mod server;
-pub mod types;
 
 pub const FCGI_VERSION_1: u8 = 1;
 
@@ -19,7 +18,7 @@ mod tests {
 
     use crate::{
         client::Client,
-        record::{begin_request::Role, Data, Kind, Stdout},
+        record::{begin_request::Role, ByteSlice, Data, Kind, Stdout},
         request::Request,
         response::Response,
         server::Server,
@@ -71,7 +70,7 @@ mod tests {
 
                 let response = Response {
                     app_status: Some(1),
-                    stdout: Stdout::new(bytes),
+                    stdout: ByteSlice::new(bytes).map(Stdout),
                     stderr: None,
                 };
 

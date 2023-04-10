@@ -2,7 +2,9 @@ use std::{fmt, fs::File, io::Read};
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use super::{DecodeFrame, DecodeFrameError, EncodeFragment, EncodeFrameError};
+use crate::codec::Buffer;
+
+use super::{DecodeFrame, DecodeFrameError, EncodeChunk, EncodeFrameError};
 
 pub(crate) enum Kind {
     ByteSlice(Bytes),
@@ -52,11 +54,8 @@ impl From<File> for Data {
     }
 }
 
-impl EncodeFragment for Data {
-    fn encode_fragment(
-        &mut self,
-        buf: &mut bytes::buf::Limit<&mut BytesMut>,
-    ) -> Option<Result<(), EncodeFrameError>> {
+impl EncodeChunk for Data {
+    fn encode_chunk(&mut self, buf: &mut Buffer) -> Option<Result<(), EncodeFrameError>> {
         match &mut self.kind {
             Kind::ByteSlice(bytes) => {
                 if bytes.is_empty() {
@@ -65,7 +64,6 @@ impl EncodeFragment for Data {
 
                 let n = buf.remaining_mut().min(bytes.len());
 
-                buf.get_mut().reserve(n);
                 buf.put(bytes.split_to(n));
             }
             Kind::Reader(reader) => {
