@@ -1,5 +1,4 @@
 pub(crate) mod header;
-pub(crate) mod record;
 
 pub mod abort_request;
 pub mod begin_request;
@@ -14,7 +13,6 @@ pub mod unknown_type;
 
 // Re-export
 pub(crate) use header::*;
-pub(crate) use record::*;
 
 pub use abort_request::*;
 pub use begin_request::*;
@@ -31,10 +29,7 @@ use bytes::BytesMut;
 
 use crate::{
     codec::Buffer,
-    meta::{
-        Application, Client, Discrete, DynRequestMetaExt, DynResponseMetaExt, Management, Meta,
-        Server, Stream,
-    },
+    meta::{Application, Client, Discrete, Management, Meta, Server, Stream},
 };
 
 pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = u16::MAX as usize;
@@ -59,18 +54,71 @@ pub trait DecodeFrame: Sized + Meta {
     fn decode(src: BytesMut) -> Result<Self, DecodeFrameError>;
 }
 
+/// Ready to be sent records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EncodeFrameError {
-    InsufficientSizeInBuffer,
-    MaxFrameSizeExceeded,
+pub(crate) struct Record<T> {
+    pub(crate) header: Header,
+    pub(crate) body: T,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecodeFrameError {
-    CorruptedFrame,
-    InsufficientDataInBuffer,
+impl<T> Record<T> {
+    pub fn new(id: Id, body: T) -> Self {
+        Record {
+            header: Header::new(id),
+            body,
+        }
+    }
+
+    /// Maps the type of body `T` to `U`.
+    pub fn map<U>(self, f: fn(T) -> U) -> Record<U> {
+        Record {
+            header: self.header,
+            body: f(self.body),
+        }
+    }
+
+    pub fn get_header(&self) -> &Header {
+        &self.header
+    }
+
+    pub fn get_header_mut(&mut self) -> &mut Header {
+        &mut self.header
+    }
+
+    pub fn get_body(&self) -> &T {
+        &self.body
+    }
+
+    pub fn get_body_mut(&mut self) -> &mut T {
+        &mut self.body
+    }
+
+    pub fn into_parts(self) -> (Header, T) {
+        (self.header, self.body)
+    }
+
+    pub const fn from_parts(header: Header, body: T) -> Record<T> {
+        Record { header, body }
+    }
 }
 
+impl<T> AsRef<T> for Record<T> {
+    fn as_ref(&self) -> &T {
+        &self.body
+    }
+}
+
+pub(crate) trait IntoRecord: Sized {
+    fn into_record(self, header: Header) -> Record<Self>;
+}
+
+impl<T> IntoRecord for T {
+    fn into_record(self, header: Header) -> Record<T> {
+        Record::from_parts(header, self)
+    }
+}
+
+#[macro_export]
 macro_rules! impl_from_frame {
     (
         {
@@ -87,58 +135,6 @@ macro_rules! impl_from_frame {
             }
         )+
     };
-}
-
-pub enum RequestPart {
-    BeginRequest(BeginRequest),
-    AbortRequest(AbortRequest),
-    Params(Params),
-    Stdin(Stdin),
-    Data(Data),
-    GetValues(GetValues),
-    Custom(Box<dyn DynRequestMetaExt>),
-}
-
-impl_from_frame! {
-    {
-        BeginRequest,
-        AbortRequest,
-        Params,
-        Stdin,
-        Data,
-        GetValues,
-    } => RequestPart
-}
-
-impl From<Box<dyn DynRequestMetaExt>> for RequestPart {
-    fn from(value: Box<dyn DynRequestMetaExt>) -> Self {
-        RequestPart::Custom(value)
-    }
-}
-
-pub enum ResponsePart {
-    EndRequest(EndRequest),
-    Stdout(Stdout),
-    Stderr(Stderr),
-    GetValuesResult(GetValuesResult),
-    UnknownType(UnknownType),
-    Custom(Box<dyn DynResponseMetaExt>),
-}
-
-impl_from_frame! {
-    {
-        EndRequest,
-        Stdout,
-        Stderr,
-        GetValuesResult,
-        UnknownType,
-    } => ResponsePart
-}
-
-impl From<Box<dyn DynResponseMetaExt>> for ResponsePart {
-    fn from(value: Box<dyn DynResponseMetaExt>) -> Self {
-        ResponsePart::Custom(value)
-    }
 }
 
 /// Implements the `Meta` trait for standard record types.
@@ -174,4 +170,16 @@ impl_std_meta! {
     (GetValues, Client, Management, Discrete);
     (GetValuesResult, Server, Management, Discrete);
     (UnknownType, Server, Management, Discrete);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodeFrameError {
+    InsufficientSizeInBuffer,
+    MaxFrameSizeExceeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeFrameError {
+    CorruptedFrame,
+    InsufficientDataInBuffer,
 }

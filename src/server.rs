@@ -7,9 +7,9 @@ use crate::{
     },
     record::{
         begin_request::Role, end_request::ProtocolStatus, BeginRequest, EndRequest, Header,
-        IntoRecord, IntoStreamChunker, RequestPart,
+        IntoRecord, IntoStreamChunker,
     },
-    request::Request,
+    request::{Part, Request},
     response::Response,
 };
 
@@ -46,15 +46,15 @@ impl<T: AsyncRead + Unpin> Server<T> {
                         request.role = Some(x.get_role());
                     }
                     */
-                    RequestPart::AbortRequest(_) => {
+                    Part::AbortRequest(_) => {
                         self.connection.close_stream();
 
                         return Ok(None);
                     }
-                    RequestPart::Params(x) => {
+                    Part::Params(x) => {
                         request.params = Some(x);
                     }
-                    RequestPart::Stdin(x) => {
+                    Part::Stdin(x) => {
                         request.stdin = Some(x);
 
                         match request.role {
@@ -64,7 +64,7 @@ impl<T: AsyncRead + Unpin> Server<T> {
                             _ => {}
                         }
                     }
-                    RequestPart::Data(x) => {
+                    Part::Data(x) => {
                         request.data = Some(x);
 
                         break;
@@ -90,7 +90,7 @@ impl<T: AsyncRead + Unpin> Server<T> {
         loop {
             match self.connection.poll_frame().await {
                 Some(Ok(Some(req))) => match req {
-                    RequestPart::BeginRequest(begin_request) => {
+                    Part::BeginRequest(begin_request) => {
                         return Ok(BeginRequest::new(begin_request.get_role()));
                     }
                     _ => {

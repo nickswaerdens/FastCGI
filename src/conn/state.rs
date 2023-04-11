@@ -2,7 +2,8 @@ use bytes::{BufMut, BytesMut};
 
 use crate::{
     codec::Frame,
-    record::{DecodeFrameError, RecordType, RequestPart, ResponsePart},
+    record::{DecodeFrameError, RecordType},
+    request, response,
 };
 
 pub type ParseResult<T> = Result<T, ParseError>;
@@ -18,7 +19,7 @@ pub(crate) trait State {
 
 impl State for client::State {
     type Transition = client::Transition;
-    type Output = ResponsePart;
+    type Output = response::Part;
 
     fn parse_transition(frame: Frame) -> ParseResult<Self::Transition> {
         Self::Transition::parse(frame)
@@ -31,7 +32,7 @@ impl State for client::State {
 
 impl State for server::State {
     type Transition = server::Transition;
-    type Output = RequestPart;
+    type Output = request::Part;
 
     fn parse_transition(frame: Frame) -> ParseResult<Self::Transition> {
         Ok(Self::Transition::parse(frame))
@@ -114,10 +115,8 @@ pub(crate) mod client {
 
     use crate::{
         codec::Frame,
-        record::{
-            DecodeFrame, DecodeFrameError, EndRequest, RecordType, ResponsePart, Standard, Stderr,
-            Stdout,
-        },
+        record::{DecodeFrame, DecodeFrameError, EndRequest, RecordType, Standard, Stderr, Stdout},
+        response::Part,
     };
 
     use super::{Defrag, ParseError, ParseResult};
@@ -147,23 +146,21 @@ pub(crate) mod client {
 
     impl Transition {
         pub(crate) fn parse(frame: Frame) -> ParseResult<Transition> {
-            if frame.get_id() == 0 {
+            let (header, payload) = frame.into_parts();
+
+            if header.id == 0 {
                 return Ok(Transition::Unsupported);
             }
 
-            let transition = match (frame.get_record_type(), frame.payload.is_empty()) {
-                (RecordType::Standard(Standard::Stdout), false) => {
-                    Transition::ParseStdout(frame.payload)
-                }
+            let transition = match (header.record_type, payload.is_empty()) {
+                (RecordType::Standard(Standard::Stdout), false) => Transition::ParseStdout(payload),
                 (RecordType::Standard(Standard::Stdout), true) => Transition::EndOfStdout,
 
-                (RecordType::Standard(Standard::Stderr), false) => {
-                    Transition::ParseStderr(frame.payload)
-                }
+                (RecordType::Standard(Standard::Stderr), false) => Transition::ParseStderr(payload),
                 (RecordType::Standard(Standard::Stderr), true) => Transition::EndOfStderr,
 
                 (RecordType::Standard(Standard::EndRequest), false) => {
-                    Transition::ParseEndRequest(frame.payload)
+                    Transition::ParseEndRequest(payload)
                 }
                 (RecordType::Standard(Standard::EndRequest), true) => {
                     return Err(ParseError::DecodeFrameError(
@@ -188,10 +185,7 @@ pub(crate) mod client {
     }
 
     impl State {
-        pub(crate) fn parse_frame(
-            &mut self,
-            transition: Transition,
-        ) -> ParseResult<Option<ResponsePart>> {
+        pub(crate) fn parse_frame(&mut self, transition: Transition) -> ParseResult<Option<Part>> {
             let record = match (self.inner, transition) {
                 // Stdout
                 (
@@ -238,7 +232,7 @@ pub(crate) mod client {
                         err,
                     };
 
-                    payload.map(ResponsePart::from)
+                    payload.map(Part::from)
                 }
 
                 // Stderr
@@ -288,7 +282,7 @@ pub(crate) mod client {
                         out,
                     };
 
-                    record.map(ResponsePart::from)
+                    record.map(Part::from)
                 }
 
                 // EndRequest
@@ -340,8 +334,9 @@ pub(crate) mod server {
         codec::Frame,
         record::{
             begin_request::Role, AbortRequest, BeginRequest, Data, DecodeFrame, Params, RecordType,
-            RequestPart, Standard, Stdin,
+            Standard, Stdin,
         },
+        request::Part,
     };
 
     use super::{Defrag, ParseError, ParseResult};
@@ -372,16 +367,18 @@ pub(crate) mod server {
 
     impl Transition {
         pub(crate) fn parse(frame: Frame) -> Transition {
-            if frame.get_id() == 0 {
+            let (header, payload) = frame.as_parts();
+
+            if header.id == 0 {
                 return Transition::Unsupported;
             }
 
-            if !frame.payload.is_empty() {
+            if !payload.is_empty() {
                 Transition::Parse(frame)
-            } else if frame.get_record_type() == Standard::AbortRequest {
+            } else if header.record_type == Standard::AbortRequest {
                 Transition::Abort
             } else {
-                Transition::EndOfStream(frame.get_record_type())
+                Transition::EndOfStream(header.record_type)
             }
         }
     }
@@ -394,10 +391,7 @@ pub(crate) mod server {
     }
 
     impl State {
-        pub(crate) fn parse_frame(
-            &mut self,
-            transition: Transition,
-        ) -> ParseResult<Option<RequestPart>> {
+        pub(crate) fn parse_frame(&mut self, transition: Transition) -> ParseResult<Option<Part>> {
             let part = match (self.inner, transition) {
                 (RequestState::BeginRequest, Transition::Parse(frame)) => {
                     let (header, payload) = frame.into_parts();
@@ -413,9 +407,11 @@ pub(crate) mod server {
                 }
 
                 (RequestState::Params, Transition::Parse(frame)) => {
-                    validate_record_type(frame.get_record_type(), Standard::Params)?;
+                    let (header, payload) = frame.into_parts();
 
-                    self.defrag.insert_payload(frame.payload)?;
+                    validate_record_type(header.record_type, Standard::Params)?;
+
+                    self.defrag.insert_payload(payload)?;
 
                     None
                 }
@@ -430,13 +426,15 @@ pub(crate) mod server {
 
                     self.inner = RequestState::Stdin;
 
-                    record.map(RequestPart::from)
+                    record.map(Part::from)
                 }
 
                 (RequestState::Stdin, Transition::Parse(frame)) => {
-                    validate_record_type(frame.get_record_type(), Standard::Stdin)?;
+                    let (header, payload) = frame.into_parts();
 
-                    self.defrag.insert_payload(frame.payload)?;
+                    validate_record_type(header.record_type, Standard::Stdin)?;
+
+                    self.defrag.insert_payload(payload)?;
 
                     None
                 }
@@ -454,13 +452,15 @@ pub(crate) mod server {
                         _ => RequestState::Finished,
                     };
 
-                    record.map(RequestPart::from)
+                    record.map(Part::from)
                 }
 
                 (RequestState::Data, Transition::Parse(frame)) => {
-                    validate_record_type(frame.get_record_type(), Standard::Data)?;
+                    let (header, payload) = frame.into_parts();
 
-                    self.defrag.insert_payload(frame.payload)?;
+                    validate_record_type(header.record_type, Standard::Data)?;
+
+                    self.defrag.insert_payload(payload)?;
 
                     None
                 }
@@ -475,7 +475,7 @@ pub(crate) mod server {
 
                     self.inner = RequestState::Finished;
 
-                    record.map(RequestPart::from)
+                    record.map(Part::from)
                 }
 
                 // Abort

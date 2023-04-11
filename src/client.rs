@@ -7,10 +7,10 @@ use crate::{
     },
     record::{
         begin_request::Role, end_request::ProtocolStatus, BeginRequest, Header, IntoRecord,
-        IntoStreamChunker, ResponsePart,
+        IntoStreamChunker,
     },
     request::Request,
-    response::Response,
+    response::{Part, Response},
 };
 
 /// TODO: design API.
@@ -63,20 +63,18 @@ impl<T: AsyncWrite + Unpin> Client<T> {
 impl<T: AsyncRead + Unpin> Client<T> {
     /// Currently only works with the "full" parser mode.
     pub async fn recv_response(&mut self) -> Result<Response, ConnectionRecvError> {
-        use ResponsePart::*;
-
         let mut response = Response::default();
 
         loop {
             match self.connection.poll_frame().await {
                 Some(Ok(Some(res))) => match res {
-                    Stdout(x) => {
+                    Part::Stdout(x) => {
                         response.stdout = Some(x);
                     }
-                    Stderr(x) => {
+                    Part::Stderr(x) => {
                         response.stderr = Some(x);
                     }
-                    EndRequest(end_request) => {
+                    Part::EndRequest(end_request) => {
                         match end_request.get_protocol_status() {
                             ProtocolStatus::RequestComplete => {
                                 response.app_status = Some(end_request.get_app_status());
