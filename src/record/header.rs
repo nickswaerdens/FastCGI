@@ -2,8 +2,6 @@ use bytes::{BufMut, BytesMut};
 
 use crate::{meta::Meta, FCGI_VERSION_1};
 
-// use super::DeriveMeta;
-
 pub const HEADER_SIZE: usize = 8;
 
 pub type Id = u16;

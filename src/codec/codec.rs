@@ -85,7 +85,7 @@ impl FastCgiCodec {
         let content_length = self.buffer.remaining() as u16;
         let padding_length = header
             .padding
-            .map_or_else(|| 0, |padding| padding.into_u8(content_length));
+            .map_or(0, |padding| padding.into_u8(content_length));
 
         dst.reserve(HEADER_SIZE + content_length as usize + padding_length as usize);
 
@@ -184,16 +184,22 @@ where
     ) -> Result<(), Self::Error> {
         // Write to an internal ring buffer before sending it down stream, as the content_length
         // and padding_length are unknown before encoding.
-        match record.body.encode_chunk(&mut self.buffer.write_only()) {
-            Some(result) => {
-                result.map_err(|err| {
-                    // Set the read cursor past the invalid data.
-                    self.buffer.advance(self.buffer.remaining_read());
+        if let Some(result) = record.body.encode_chunk(&mut self.buffer.write_only()) {
+            result.map_err(|err| {
+                // Set the read cursor past the invalid data.
+                self.buffer.advance(self.buffer.remaining_read());
 
-                    EncodeCodecError::from(err)
-                })?
+                EncodeCodecError::from(err)
+            })?
+        } else {
+            if self.buffer.remaining_read() > 0 {
+                // TODO: turn this print into a log.
+                println!("Warning: data was ignored...");
+
+                self.buffer.advance(self.buffer.remaining_read());
             }
-            None => return Ok(()),
+
+            return Ok(());
         }
 
         self.encode_record::<T>(record.header, dst);
@@ -210,19 +216,6 @@ where
 
     fn encode(&mut self, record: Record<Empty<T>>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         self.encode_record::<T>(record.header, dst);
-
-        /*
-        let header = record.header;
-
-        let padding_length = record
-            .header
-            .padding
-            .map_or_else(|| 0, |padding| padding.into_u8(0));
-
-        dst.reserve(HEADER_SIZE + padding_length as usize);
-
-        header.encode::<T>(0, padding_length, dst);
-        dst.put_bytes(0, padding_length as usize);*/
 
         Ok(())
     }
@@ -253,7 +246,7 @@ impl Decoder for FastCgiCodec {
 
         // Decode the header, if the header was already decoded, return the
         // decoded value.
-        let (raw_header, content_length) = match self.state {
+        let (header, content_length) = match self.state {
             DecodeState::Header => match Self::decode_header(src)? {
                 Some(x) => {
                     self.state = DecodeState::Payload(x);
@@ -268,8 +261,8 @@ impl Decoder for FastCgiCodec {
         // Decode body and reserve space for the next header.
         match Self::decode_body(content_length, src) {
             Some(data) => {
-                self.state = if raw_header.padding_length > 0 {
-                    DecodeState::Padding(raw_header.padding_length)
+                self.state = if header.padding_length > 0 {
+                    DecodeState::Padding(header.padding_length)
                 } else {
                     DecodeState::Header
                 };
@@ -277,7 +270,7 @@ impl Decoder for FastCgiCodec {
                 src.reserve(HEADER_SIZE);
 
                 // Padding is stripped during the decoding of frames.
-                Ok(Some(Frame::new(raw_header, data)))
+                Ok(Some(Frame::new(header, data)))
             }
             None => Ok(None),
         }

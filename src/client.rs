@@ -3,11 +3,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::{
     conn::{
         connection::{Connection, ConnectionRecvError, ConnectionSendError},
-        parser::client::ResponseParser,
+        endpoint,
     },
     record::{
-        begin_request::Role, end_request::ProtocolStatus, BeginRequest, Data, Header, IntoRecord,
-        Params, ResponsePart, Stdin,
+        begin_request::Role, end_request::ProtocolStatus, BeginRequest, Header, IntoRecord,
+        IntoStreamChunker, ResponsePart,
     },
     request::Request,
     response::Response,
@@ -15,7 +15,7 @@ use crate::{
 
 /// TODO: design API.
 pub struct Client<T> {
-    connection: Connection<T, ResponseParser>,
+    connection: Connection<T, endpoint::Client>,
 }
 
 impl<T: AsyncRead + AsyncWrite> Client<T> {
@@ -30,48 +30,33 @@ impl<T: AsyncWrite + Unpin> Client<T> {
     pub async fn send_request(&mut self, req: Request) -> Result<(), ConnectionSendError> {
         let header = Header::new(1);
 
-        let begin_request = BeginRequest::new_filter().keep_conn().into_record(header);
+        let begin_request = BeginRequest::new(req.role).keep_conn().into_record(header);
+
         self.connection.feed_frame(begin_request).await?;
 
-        match req.params {
-            Some(params) => {
-                self.connection
-                    .feed_stream(params.into_record(header))
-                    .await?;
-            }
-            None => {
-                self.connection.feed_empty::<Params>(header).await?;
-            }
-        }
+        self.send_stream(header, req.params).await?;
+        self.send_stream(header, req.stdin).await?;
 
-        match req.stdin {
-            Some(stdin) => {
-                self.connection
-                    .feed_stream(stdin.into_record(header))
-                    .await?;
-            }
-            None => {
-                self.connection.feed_empty::<Stdin>(header).await?;
-            }
-        }
-
-        if req.role == Some(Role::Filter) {
-            match req.data {
-                Some(data) => {
-                    self.connection
-                        .feed_stream(data.into_record(header))
-                        .await?;
-                }
-                None => {
-                    self.connection.feed_empty::<Data>(header).await?;
-                }
-            }
+        if req.role == Role::Filter {
+            self.send_stream(header, req.data).await?;
         }
 
         // Make sure all the data was written out.
-        self.connection.flush().await.unwrap();
+        self.connection.flush().await?;
 
         Ok(())
+    }
+
+    async fn send_stream<S: IntoStreamChunker>(
+        &mut self,
+        header: Header,
+        stream: Option<S>,
+    ) -> Result<(), ConnectionSendError> {
+        if let Some(data) = stream {
+            self.connection.feed_stream(data.into_record(header)).await
+        } else {
+            self.connection.feed_empty::<S::Item>(header).await
+        }
     }
 }
 

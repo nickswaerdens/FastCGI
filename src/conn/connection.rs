@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::Framed;
@@ -9,35 +11,38 @@ use crate::{
 };
 
 use super::{
-    parser::{Parser, ParserError},
+    endpoint::Endpoint,
+    state::{ParseError, State},
     stream::Stream,
 };
 
 #[derive(Debug)]
-pub(crate) struct Connection<T, P: Parser> {
+pub(crate) struct Connection<T, P: Endpoint> {
     transport: Framed<T, FastCgiCodec>,
 
     // Currently supports simplexed connections only.
-    streams: Option<Stream<P>>,
+    streams: Option<Stream<P::State>>,
+    _marker: PhantomData<P>,
 }
 
-impl<T: AsyncRead + AsyncWrite, P: Parser> Connection<T, P> {
+impl<T: AsyncRead + AsyncWrite, P: Endpoint> Connection<T, P> {
     pub fn new(transport: T) -> Self {
         Self {
             transport: Framed::new(transport, FastCgiCodec::new()),
 
             streams: None,
+            _marker: PhantomData,
         }
     }
 }
 
 impl<T, P> Connection<T, P>
 where
-    P: Parser,
+    P: Endpoint,
 {
     pub fn close_stream(&mut self) {
         // TODO
-        self.streams = None;
+        self.streams.take();
 
         dbg!("Closed the stream");
     }
@@ -46,10 +51,13 @@ where
 impl<T, P> Connection<T, P>
 where
     T: AsyncRead + Unpin,
-    P: Parser,
+    P: Endpoint,
+    P::State: Default,
 {
     /// Poll for the next, parsed frame.
-    pub async fn poll_frame(&mut self) -> Option<Result<Option<P::Output>, ConnectionRecvError>> {
+    pub async fn poll_frame(
+        &mut self,
+    ) -> Option<Result<Option<<P::State as State>::Output>, ConnectionRecvError>> {
         loop {
             let frame = match self.transport.next().await {
                 Some(Ok(x)) => x,
@@ -69,14 +77,17 @@ where
         }
     }
 
-    fn poll_frame_inner(&mut self, frame: Frame) -> Result<Option<P::Output>, ConnectionRecvError> {
+    fn poll_frame_inner(
+        &mut self,
+        frame: Frame,
+    ) -> Result<Option<<P::State as State>::Output>, ConnectionRecvError> {
         let record = match self.streams.as_mut() {
-            Some(stream) => stream.parse_frame(frame)?,
+            Some(stream) => stream.parse(frame)?,
             None => {
                 let mut stream = Stream::default();
-                let record = stream.parse_frame(frame)?;
+                let record = stream.parse(frame)?;
 
-                self.streams = Some(stream);
+                self.streams.replace(stream);
                 record
             }
         };
@@ -88,7 +99,7 @@ where
 impl<T, P> Connection<T, P>
 where
     T: AsyncWrite + Unpin,
-    P: Parser,
+    P: Endpoint,
 {
     pub async fn feed_frame<D>(&mut self, record: Record<D>) -> Result<(), ConnectionSendError>
     where
@@ -114,7 +125,7 @@ where
             self.transport.feed(&mut record).await?;
         }
 
-        let empty_record = record.map(|_| Empty::<S::Inner>::new());
+        let empty_record = record.map(|_| Empty::<S::Item>::new());
 
         self.transport
             .feed(empty_record)
@@ -163,7 +174,7 @@ impl From<EncodeFrameError> for ConnectionSendError {
 #[derive(Debug)]
 pub enum ConnectionRecvError {
     DecodeCodecError(DecodeCodecError),
-    ParserError(ParserError),
+    ParserError(ParseError),
     UnexpectedEndOfInput,
     StdIoError(std::io::Error),
 }
@@ -174,8 +185,8 @@ impl From<DecodeCodecError> for ConnectionRecvError {
     }
 }
 
-impl From<ParserError> for ConnectionRecvError {
-    fn from(value: ParserError) -> Self {
+impl From<ParseError> for ConnectionRecvError {
+    fn from(value: ParseError) -> Self {
         ConnectionRecvError::ParserError(value)
     }
 }

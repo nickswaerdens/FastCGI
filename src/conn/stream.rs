@@ -1,31 +1,30 @@
-use std::marker::PhantomData;
-
 use crate::codec::Frame;
 
-use super::parser::{Parser, ParserError};
+use super::state::{ParseError, State};
 
 #[derive(Debug)]
-pub(crate) struct Stream<P: Parser> {
-    state: P::State,
-    _parser: PhantomData<P>,
+pub(crate) struct Stream<S: State> {
+    state: S,
 }
 
-impl<P: Parser> Stream<P> {
-    pub fn parse_frame(&mut self, frame: Frame) -> Result<Option<P::Output>, ParserError> {
-        let transition = P::parse_transition(frame)?;
+impl<S: State> Stream<S>
+where
+    S: State,
+{
+    pub(crate) fn parse(&mut self, frame: Frame) -> Result<Option<S::Output>, ParseError> {
+        let transition = S::parse_transition(frame)?;
 
-        P::parse_frame(&mut self.state, transition)
+        S::parse_frame(&mut self.state, transition)
     }
 }
 
-impl<P> Default for Stream<P>
+impl<S> Default for Stream<S>
 where
-    P: Parser,
+    S: State + Default,
 {
     fn default() -> Self {
         Self {
-            state: P::State::default(),
-            _parser: PhantomData,
+            state: S::default(),
         }
     }
 }

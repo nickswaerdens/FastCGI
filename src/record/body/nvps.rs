@@ -192,7 +192,7 @@ impl NameValuePair {
         let name: Bytes = name.into();
         let value: Option<Bytes> = value.map(Into::into);
 
-        if !Param::validate(&name) || !value.as_ref().map(|x| Param::validate(x)).unwrap_or(true) {
+        if !Param::validate(&name) || !value.as_ref().map_or(true, |x| Param::validate(x)) {
             return None;
         }
 
@@ -218,9 +218,9 @@ impl NameValuePair {
 
     pub fn size_hint(&self) -> usize {
         self.name.byte_count() as usize
-            + self.value.as_ref().map(|x| x.byte_count()).unwrap_or(0) as usize
+            + self.value.as_ref().map_or(0, |x| x.byte_count() as usize)
             + self.name.inner().len()
-            + self.value.as_ref().map(|x| x.inner().len()).unwrap_or(0)
+            + self.value.as_ref().map_or(0, |x| x.inner().len())
     }
 
     fn encode<B: BufMut>(self, dst: &mut B) -> Result<(), EncodeFrameError> {

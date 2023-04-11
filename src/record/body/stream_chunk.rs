@@ -29,13 +29,13 @@ impl<T: EncodeChunk> StreamChunker<T> {
 
 /// Converts `Self` into a `StreamChunker`.
 pub(crate) trait IntoStreamChunker: Sized + EncodeChunk {
-    type Inner: EncodeChunk;
+    type Item: EncodeChunk;
 
     fn into_stream_chunker(self) -> StreamChunker<Self>;
 }
 
 impl<T: EncodeChunk> IntoStreamChunker for T {
-    type Inner = T;
+    type Item = T;
 
     fn into_stream_chunker(self) -> StreamChunker<Self> {
         StreamChunker { inner: Some(self) }

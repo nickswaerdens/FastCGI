@@ -34,7 +34,7 @@ mod tests {
         let data = Data::new_reader(file);
 
         let request = Request {
-            role: Some(Role::Filter),
+            role: Role::Filter,
             params: None,
             stdin: None,
             data: Some(data),
