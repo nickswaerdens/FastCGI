@@ -8,13 +8,13 @@ use super::{DecodeFrame, DecodeFrameError, EncodeFrame, EncodeFrameError};
 pub struct AbortRequest;
 
 impl EncodeFrame for AbortRequest {
-    fn encode(self, _: &mut Buffer) -> Result<(), EncodeFrameError> {
+    fn encode_frame(self, _: &mut Buffer) -> Result<(), EncodeFrameError> {
         Ok(())
     }
 }
 
 impl DecodeFrame for AbortRequest {
-    fn decode(_: BytesMut) -> Result<AbortRequest, DecodeFrameError> {
+    fn decode_frame(_: BytesMut) -> Result<AbortRequest, DecodeFrameError> {
         Ok(AbortRequest)
     }
 }

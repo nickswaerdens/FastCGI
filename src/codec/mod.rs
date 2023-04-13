@@ -9,7 +9,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::meta::{self, Meta};
 use crate::record::{
-    Empty, EncodeChunk, EncodeFrame, EncodeFrameError, Header, Id, Record, RecordType,
+    EncodeChunk, EncodeFrame, EncodeFrameError, EndOfStream, Header, Id, Record, RecordType,
     StreamChunker, DEFAULT_MAX_PAYLOAD_SIZE, HEADER_SIZE,
 };
 
@@ -146,12 +146,13 @@ where
 
         // Write to an internal ring buffer before sending it down stream, as the content_length
         // and padding_length are unknown before encoding.
-        body.encode(&mut self.buffer.write_only()).map_err(|err| {
-            // Read past the invalid data.
-            self.buffer.advance(self.buffer.remaining_read());
+        body.encode_frame(&mut self.buffer.write_only())
+            .map_err(|err| {
+                // Read past the invalid data.
+                self.buffer.advance(self.buffer.remaining_read());
 
-            EncodeCodecError::from(err)
-        })?;
+                EncodeCodecError::from(err)
+            })?;
 
         self.encode_record::<T>(header, dst);
 
@@ -196,13 +197,17 @@ where
     }
 }
 
-impl<T> Encoder<Record<Empty<T>>> for FastCgiCodec
+impl<T> Encoder<Record<EndOfStream<T>>> for FastCgiCodec
 where
     T: Meta<DataKind = meta::Stream>,
 {
     type Error = EncodeCodecError;
 
-    fn encode(&mut self, record: Record<Empty<T>>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(
+        &mut self,
+        record: Record<EndOfStream<T>>,
+        dst: &mut BytesMut,
+    ) -> Result<(), Self::Error> {
         self.encode_record::<T>(record.header, dst);
 
         Ok(())

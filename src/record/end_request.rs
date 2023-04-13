@@ -1,4 +1,4 @@
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
 use crate::codec::Buffer;
 
@@ -38,17 +38,7 @@ impl EndRequest {
         }
     }
 
-    pub fn get_app_status(&self) -> u32 {
-        self.app_status
-    }
-
-    pub fn get_protocol_status(&self) -> ProtocolStatus {
-        self.protocol_status
-    }
-}
-
-impl EncodeFrame for EndRequest {
-    fn encode(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
+    pub fn encode<B: BufMut>(self, dst: &mut B) -> Result<(), EncodeFrameError> {
         if dst.remaining_mut() < 8 {
             return Err(EncodeFrameError::InsufficientSizeInBuffer);
         }
@@ -59,10 +49,8 @@ impl EncodeFrame for EndRequest {
 
         Ok(())
     }
-}
 
-impl DecodeFrame for EndRequest {
-    fn decode(src: BytesMut) -> Result<EndRequest, DecodeFrameError> {
+    pub fn decode(mut src: BytesMut) -> Result<EndRequest, DecodeFrameError> {
         if src.len() != 8 {
             return Err(DecodeFrameError::CorruptedFrame);
         }
@@ -72,9 +60,46 @@ impl DecodeFrame for EndRequest {
             return Err(DecodeFrameError::CorruptedFrame);
         };
 
-        let app_status = u32::from_be_bytes(src[..4].try_into().unwrap());
-        let protocol_status = ProtocolStatus::from(src[4]);
+        let app_status = src.get_u32();
+        let protocol_status = src.get_u8().into();
 
         Ok(EndRequest::new(app_status, protocol_status))
+    }
+
+    pub fn get_app_status(&self) -> u32 {
+        self.app_status
+    }
+
+    pub fn get_protocol_status(&self) -> ProtocolStatus {
+        self.protocol_status
+    }
+}
+
+impl EncodeFrame for EndRequest {
+    fn encode_frame(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
+        self.encode(dst)
+    }
+}
+
+impl DecodeFrame for EndRequest {
+    fn decode_frame(src: BytesMut) -> Result<EndRequest, DecodeFrameError> {
+        Self::decode(src)
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_decode() {
+        let end_request = EndRequest::new(1, ProtocolStatus::RequestComplete);
+
+        let mut buf = BytesMut::with_capacity(8);
+
+        end_request.encode(&mut buf).unwrap();
+
+        let result = EndRequest::decode(buf).unwrap();
+
+        assert_eq!(end_request, result);
     }
 }

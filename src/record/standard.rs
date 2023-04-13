@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 
 use crate::codec::Buffer;
 
@@ -16,11 +16,23 @@ impl EncodeChunk for Stdin {
 }
 
 impl DecodeFrame for Stdin {
-    fn decode(src: BytesMut) -> Result<Self, DecodeFrameError> {
+    fn decode_frame(src: BytesMut) -> Result<Self, DecodeFrameError> {
         Ok(Stdin(ByteSlice::decode(
             src,
             ByteSlice::validate_non_empty,
         )?))
+    }
+}
+
+impl AsRef<ByteSlice> for Stdin {
+    fn as_ref(&self) -> &ByteSlice {
+        &self.0
+    }
+}
+
+impl AsRef<Bytes> for Stdin {
+    fn as_ref(&self) -> &Bytes {
+        self.0.as_ref()
     }
 }
 
@@ -36,11 +48,23 @@ impl EncodeChunk for Stdout {
 }
 
 impl DecodeFrame for Stdout {
-    fn decode(src: BytesMut) -> Result<Self, DecodeFrameError> {
+    fn decode_frame(src: BytesMut) -> Result<Self, DecodeFrameError> {
         Ok(Stdout(ByteSlice::decode(
             src,
             ByteSlice::validate_non_empty,
         )?))
+    }
+}
+
+impl AsRef<ByteSlice> for Stdout {
+    fn as_ref(&self) -> &ByteSlice {
+        &self.0
+    }
+}
+
+impl AsRef<Bytes> for Stdout {
+    fn as_ref(&self) -> &Bytes {
+        self.0.as_ref()
     }
 }
 
@@ -56,10 +80,22 @@ impl EncodeChunk for Stderr {
 }
 
 impl DecodeFrame for Stderr {
-    fn decode(src: BytesMut) -> Result<Self, DecodeFrameError> {
+    fn decode_frame(src: BytesMut) -> Result<Self, DecodeFrameError> {
         Ok(Stderr(ByteSlice::decode(
             src,
             ByteSlice::validate_non_empty,
         )?))
+    }
+}
+
+impl AsRef<ByteSlice> for Stderr {
+    fn as_ref(&self) -> &ByteSlice {
+        &self.0
+    }
+}
+
+impl AsRef<Bytes> for Stderr {
+    fn as_ref(&self) -> &Bytes {
+        self.0.as_ref()
     }
 }

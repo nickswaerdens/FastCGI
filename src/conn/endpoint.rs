@@ -3,7 +3,7 @@ use core::fmt;
 use super::state;
 
 pub(crate) trait Endpoint {
-    type State: state::State + Default + fmt::Debug;
+    type State: state::State + fmt::Debug;
 }
 
 #[derive(Debug)]

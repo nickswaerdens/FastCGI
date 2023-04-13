@@ -37,7 +37,7 @@ pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = u16::MAX as usize;
 /// EncodeFrame trait which is used to encode discrete records.
 pub trait EncodeFrame: Meta<DataKind = Discrete> {
     /// Encodes self into a fixed size RingBuffer.
-    fn encode(self, dst: &mut Buffer) -> Result<(), EncodeFrameError>;
+    fn encode_frame(self, dst: &mut Buffer) -> Result<(), EncodeFrameError>;
 }
 
 /// EncodeChunk trait which is used to encode size-limited chunks of stream records.
@@ -51,7 +51,7 @@ pub trait EncodeChunk: Meta<DataKind = Stream> {
 }
 
 pub trait DecodeFrame: Sized + Meta {
-    fn decode(src: BytesMut) -> Result<Self, DecodeFrameError>;
+    fn decode_frame(src: BytesMut) -> Result<Self, DecodeFrameError>;
 }
 
 /// Ready to be sent records.
@@ -119,22 +119,45 @@ impl<T> IntoRecord for T {
 }
 
 #[macro_export]
-macro_rules! impl_from_frame {
+macro_rules! build_enum_with_from_impls {
     (
-        {
-            $(
-                $frame:ident,
-            )+
-        } => $kind:ident
+        $vis:vis $name:ident {
+            $($variant:tt $(($fool:ty))?,)*
+        }
     ) => {
-        $(
-            impl From<$frame> for $kind {
-                fn from(value: $frame) -> Self {
-                    $kind::$frame(value)
+        #[derive(Debug)]
+        $vis enum $name {
+            $($variant $(($fool))?,)*
+        }
+
+        macro_rules! impl_from {
+            ($inner:tt $frame:ty) => {
+                impl From<$frame> for $name {
+                    fn from(value: $frame) -> Self {
+                        $name::$inner(value)
+                    }
                 }
-            }
-        )+
-    };
+
+                impl TryFrom<$name> for $frame {
+                    type Error = $name;
+
+                    fn try_from(kind: $name) -> Result<Self, Self::Error> {
+                        match kind {
+                            $name::$inner(frame) => Ok(frame),
+                            e => Err(e),
+                        }
+                    }
+                }
+            };
+            ($inner:tt) => {
+                // Do nothing as `From` cannot be implemented for unit-like enum variants.
+            };
+        }
+
+        $(
+            impl_from!($variant $($fool)?);
+        )*
+    }
 }
 
 /// Implements the `Meta` trait for standard record types.

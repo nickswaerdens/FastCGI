@@ -1,31 +1,33 @@
 use bytes::{BufMut, BytesMut};
 
-use crate::{
-    codec::Frame,
-    record::{DecodeFrameError, RecordType},
-    request, response,
-};
+use crate::{codec::Frame, request, response};
 
-pub type ParseResult<T> = Result<T, ParseError>;
-
-pub(crate) trait State {
+pub(crate) trait State: Default {
     type Transition;
-    type Output;
+    type Output: std::fmt::Debug;
+    type Error: ParseError + std::fmt::Debug;
 
-    fn parse_transition(frame: Frame) -> ParseResult<Self::Transition>;
+    fn parse_transition(frame: Frame) -> Result<Self::Transition, Self::Error>;
 
-    fn parse_frame(&mut self, transition: Self::Transition) -> ParseResult<Option<Self::Output>>;
+    fn parse_frame(
+        &mut self,
+        transition: Self::Transition,
+    ) -> Result<Option<Self::Output>, Self::Error>;
 }
 
 impl State for client::State {
     type Transition = client::Transition;
     type Output = response::Part;
+    type Error = client::ParseResponseError;
 
-    fn parse_transition(frame: Frame) -> ParseResult<Self::Transition> {
+    fn parse_transition(frame: Frame) -> Result<Self::Transition, Self::Error> {
         Self::Transition::parse(frame)
     }
 
-    fn parse_frame(&mut self, transition: Self::Transition) -> ParseResult<Option<Self::Output>> {
+    fn parse_frame(
+        &mut self,
+        transition: Self::Transition,
+    ) -> Result<Option<Self::Output>, Self::Error> {
         self.parse_frame(transition)
     }
 }
@@ -33,12 +35,16 @@ impl State for client::State {
 impl State for server::State {
     type Transition = server::Transition;
     type Output = request::Part;
+    type Error = server::ParseRequestError;
 
-    fn parse_transition(frame: Frame) -> ParseResult<Self::Transition> {
+    fn parse_transition(frame: Frame) -> Result<Self::Transition, Self::Error> {
         Ok(Self::Transition::parse(frame))
     }
 
-    fn parse_frame(&mut self, transition: Self::Transition) -> ParseResult<Option<Self::Output>> {
+    fn parse_frame(
+        &mut self,
+        transition: Self::Transition,
+    ) -> Result<Option<Self::Output>, Self::Error> {
         self.parse_frame(transition)
     }
 }
@@ -66,15 +72,14 @@ impl Defrag {
         self
     }
 
-    pub(crate) fn insert_payload(&mut self, payload: BytesMut) -> ParseResult<()> {
-        let n = payload.len();
+    pub(crate) fn insert_payload(
+        &mut self,
+        payload: BytesMut,
+    ) -> Result<(), ExceededMaximumStreamSize> {
+        let new_size = self.current_total_payload + payload.len();
 
-        let new_size = self.current_total_payload + n;
         if self.max_total_payload < new_size {
-            return Err(ParseError::ExceededMaximumStreamSize((
-                new_size,
-                self.max_total_payload,
-            )));
+            Err(ExceededMaximumStreamSize(new_size, self.max_total_payload))?;
         }
 
         self.payloads.push(payload);
@@ -110,7 +115,19 @@ impl Default for Defrag {
     }
 }
 
-pub(crate) mod client {
+pub struct ExceededMaximumStreamSize(usize, usize);
+
+impl std::fmt::Debug for ExceededMaximumStreamSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "The stream has exceeded it's maximum allowed size [{} < {}].",
+            self.0, self.1
+        )
+    }
+}
+
+pub mod client {
     use bytes::BytesMut;
 
     use crate::{
@@ -119,19 +136,31 @@ pub(crate) mod client {
         response::Part,
     };
 
-    use super::{Defrag, ParseError, ParseResult};
+    use super::{Defrag, ExceededMaximumStreamSize};
 
-    #[derive(Debug, Clone, Copy)]
+    type ParseResult<T> = Result<T, ParseResponseError>;
+
+    #[derive(Debug, Default, Clone, Copy)]
     enum StreamState {
+        #[default]
         Init,
         Started,
         Ended,
     }
 
     #[derive(Debug, Clone, Copy)]
-    enum ResponseState {
+    enum Inner {
         Std { out: StreamState, err: StreamState },
         Finished,
+    }
+
+    impl Default for Inner {
+        fn default() -> Self {
+            Inner::Std {
+                out: StreamState::default(),
+                err: StreamState::default(),
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -141,16 +170,13 @@ pub(crate) mod client {
         EndOfStdout,
         EndOfStderr,
         ParseEndRequest(BytesMut),
-        Unsupported,
     }
 
     impl Transition {
         pub(crate) fn parse(frame: Frame) -> ParseResult<Transition> {
             let (header, payload) = frame.into_parts();
 
-            if header.id == 0 {
-                return Ok(Transition::Unsupported);
-            }
+            assert!(header.id > 0);
 
             let transition = match (header.record_type, payload.is_empty()) {
                 (RecordType::Standard(Standard::Stdout), false) => Transition::ParseStdout(payload),
@@ -163,21 +189,23 @@ pub(crate) mod client {
                     Transition::ParseEndRequest(payload)
                 }
                 (RecordType::Standard(Standard::EndRequest), true) => {
-                    return Err(ParseError::DecodeFrameError(
+                    return Err(ParseResponseError::DecodeFrameError(
                         DecodeFrameError::InsufficientDataInBuffer,
                     ))
                 }
 
-                (record_type, _) => return Err(ParseError::UnexpectedRecordType(record_type)),
+                (record_type, _) => {
+                    return Err(ParseResponseError::UnexpectedRecordType(record_type))
+                }
             };
 
             Ok(transition)
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     pub(crate) struct State {
-        inner: ResponseState,
+        inner: Inner,
 
         // stdout and stderr can be interleaved.
         stdout_defrag: Defrag,
@@ -185,140 +213,9 @@ pub(crate) mod client {
     }
 
     impl State {
-        pub(crate) fn parse_frame(&mut self, transition: Transition) -> ParseResult<Option<Part>> {
-            let record = match (self.inner, transition) {
-                // Stdout
-                (
-                    ResponseState::Std {
-                        out: StreamState::Init,
-                        err,
-                    },
-                    Transition::ParseStdout(payload),
-                ) => {
-                    self.stdout_defrag.insert_payload(payload)?;
-
-                    self.inner = ResponseState::Std {
-                        out: StreamState::Started,
-                        err,
-                    };
-
-                    None
-                }
-                (
-                    ResponseState::Std {
-                        out: StreamState::Started,
-                        ..
-                    },
-                    Transition::ParseStdout(payload),
-                ) => {
-                    self.stdout_defrag.insert_payload(payload)?;
-                    None
-                }
-                (
-                    ResponseState::Std {
-                        out: StreamState::Started,
-                        err,
-                    },
-                    Transition::EndOfStdout,
-                ) => {
-                    let payload = self
-                        .stdout_defrag
-                        .handle_end_of_stream()
-                        .map(Stdout::decode)
-                        .transpose()?;
-
-                    self.inner = ResponseState::Std {
-                        out: StreamState::Ended,
-                        err,
-                    };
-
-                    payload.map(Part::from)
-                }
-
-                // Stderr
-                (
-                    ResponseState::Std {
-                        err: StreamState::Init,
-                        out,
-                    },
-                    Transition::ParseStderr(payload),
-                ) => {
-                    self.stderr_defrag.insert_payload(payload)?;
-
-                    self.inner = ResponseState::Std {
-                        err: StreamState::Started,
-                        out,
-                    };
-
-                    None
-                }
-                (
-                    ResponseState::Std {
-                        err: StreamState::Started,
-                        ..
-                    },
-                    Transition::ParseStderr(payload),
-                ) => {
-                    self.stderr_defrag.insert_payload(payload)?;
-                    None
-                }
-
-                // Optionally parse empty stderr requests, even if there was no actual stderr response.
-                (
-                    ResponseState::Std {
-                        err: StreamState::Started | StreamState::Init,
-                        out,
-                    },
-                    Transition::EndOfStderr,
-                ) => {
-                    let record = self
-                        .stderr_defrag
-                        .handle_end_of_stream()
-                        .map(Stderr::decode)
-                        .transpose()?;
-
-                    self.inner = ResponseState::Std {
-                        err: StreamState::Ended,
-                        out,
-                    };
-
-                    record.map(Part::from)
-                }
-
-                // EndRequest
-                (
-                    ResponseState::Std {
-                        out: StreamState::Ended,
-                        err: StreamState::Init | StreamState::Ended,
-                    },
-                    Transition::ParseEndRequest(payload),
-                ) => {
-                    let end_request = EndRequest::decode(payload)?;
-
-                    self.inner = ResponseState::Finished;
-
-                    Some(end_request.into())
-                }
-
-                // Unsupported
-                (_, Transition::Unsupported) => {
-                    // TODO: Add Logger warning.
-                    println!("Record ignored: management records are currently not supported.");
-                    return Ok(None);
-                }
-
-                // Invalid state
-                _ => return Err(ParseError::InvalidState),
-            };
-
-            Ok(record)
-        }
-    }
-
-    impl Default for State {
-        fn default() -> Self {
+        pub(crate) fn new() -> Self {
             Self {
-                inner: ResponseState::Std {
+                inner: Inner::Std {
                     out: StreamState::Init,
                     err: StreamState::Init,
                 },
@@ -326,29 +223,216 @@ pub(crate) mod client {
                 stderr_defrag: Defrag::default(),
             }
         }
+
+        /// Return a part when it can be fully constructed, otherwise returns None.
+        pub(crate) fn parse_frame(&mut self, transition: Transition) -> ParseResult<Option<Part>> {
+            let record = match (self.inner, transition) {
+                // Stdout
+                (
+                    Inner::Std {
+                        out: StreamState::Init,
+                        err,
+                    },
+                    Transition::ParseStdout(payload),
+                ) => {
+                    self.stdout_defrag.insert_payload(payload)?;
+
+                    self.inner = Inner::Std {
+                        out: StreamState::Started,
+                        err,
+                    };
+
+                    None
+                }
+                (
+                    Inner::Std {
+                        out: StreamState::Started,
+                        ..
+                    },
+                    Transition::ParseStdout(payload),
+                ) => {
+                    self.stdout_defrag.insert_payload(payload)?;
+                    None
+                }
+
+                // EndOfStdout
+                (
+                    Inner::Std {
+                        out: StreamState::Init,
+                        err,
+                    },
+                    Transition::EndOfStdout,
+                ) => {
+                    self.inner = Inner::Std {
+                        out: StreamState::Ended,
+                        err,
+                    };
+
+                    Some(Part::Stdout(None))
+                }
+                (
+                    Inner::Std {
+                        out: StreamState::Started,
+                        err,
+                    },
+                    Transition::EndOfStdout,
+                ) => {
+                    let stdout = self
+                        .stdout_defrag
+                        .handle_end_of_stream()
+                        .map(Stdout::decode_frame)
+                        .transpose()?;
+
+                    self.inner = Inner::Std {
+                        out: StreamState::Ended,
+                        err,
+                    };
+
+                    Some(Part::from(stdout))
+                }
+
+                // Stderr
+                (
+                    Inner::Std {
+                        err: StreamState::Init,
+                        out,
+                    },
+                    Transition::ParseStderr(payload),
+                ) => {
+                    self.stderr_defrag.insert_payload(payload)?;
+
+                    self.inner = Inner::Std {
+                        err: StreamState::Started,
+                        out,
+                    };
+
+                    None
+                }
+                (
+                    Inner::Std {
+                        err: StreamState::Started,
+                        ..
+                    },
+                    Transition::ParseStderr(payload),
+                ) => {
+                    self.stderr_defrag.insert_payload(payload)?;
+                    None
+                }
+
+                // EndOfStderr
+                // Parse optional empty Stderr requests.
+                (
+                    Inner::Std {
+                        err: StreamState::Init,
+                        out,
+                    },
+                    Transition::EndOfStderr,
+                ) => {
+                    self.inner = Inner::Std {
+                        err: StreamState::Ended,
+                        out,
+                    };
+
+                    Some(Part::Stderr(None))
+                }
+                (
+                    Inner::Std {
+                        err: StreamState::Started,
+                        out,
+                    },
+                    Transition::EndOfStderr,
+                ) => {
+                    let stderr = self
+                        .stderr_defrag
+                        .handle_end_of_stream()
+                        .map(Stderr::decode_frame)
+                        .transpose()?;
+
+                    self.inner = Inner::Std {
+                        err: StreamState::Ended,
+                        out,
+                    };
+
+                    Some(Part::from(stderr))
+                }
+
+                // EndRequest
+                (
+                    Inner::Std {
+                        out: StreamState::Ended,
+                        err: StreamState::Init | StreamState::Ended,
+                    },
+                    Transition::ParseEndRequest(payload),
+                ) => {
+                    let end_request = EndRequest::decode_frame(payload)?;
+
+                    self.inner = Inner::Finished;
+
+                    Some(Part::from(end_request))
+                }
+
+                // Invalid state
+                _ => return Err(ParseResponseError::InvalidState),
+            };
+
+            Ok(record)
+        }
+    }
+
+    #[derive(Debug)]
+    pub enum ParseResponseError {
+        InvalidState,
+        UnexpectedRecordType(RecordType),
+
+        // Defrag
+        ExceededMaximumStreamSize(ExceededMaximumStreamSize),
+
+        DecodeFrameError(DecodeFrameError),
+        StdIoError(std::io::Error),
+    }
+
+    impl From<std::io::Error> for ParseResponseError {
+        fn from(value: std::io::Error) -> Self {
+            ParseResponseError::StdIoError(value)
+        }
+    }
+
+    impl From<DecodeFrameError> for ParseResponseError {
+        fn from(value: DecodeFrameError) -> Self {
+            ParseResponseError::DecodeFrameError(value)
+        }
+    }
+
+    impl From<ExceededMaximumStreamSize> for ParseResponseError {
+        fn from(value: ExceededMaximumStreamSize) -> Self {
+            ParseResponseError::ExceededMaximumStreamSize(value)
+        }
     }
 }
 
-pub(crate) mod server {
+pub mod server {
     use crate::{
         codec::Frame,
         record::{
-            begin_request::Role, AbortRequest, BeginRequest, Data, DecodeFrame, Params, RecordType,
-            Standard, Stdin,
+            begin_request::Role, BeginRequest, Data, DecodeFrame, DecodeFrameError, Params,
+            RecordType, Standard, Stdin,
         },
         request::Part,
     };
 
-    use super::{Defrag, ParseError, ParseResult};
+    use super::{Defrag, ExceededMaximumStreamSize};
+
+    type ParseResult<T> = Result<T, ParseRequestError>;
 
     fn validate_record_type(lh: RecordType, rh: impl PartialEq<RecordType>) -> ParseResult<()> {
         (rh == lh)
             .then_some(())
-            .ok_or(ParseError::UnexpectedRecordType(lh))
+            .ok_or(ParseRequestError::UnexpectedRecordType(lh))
     }
 
-    #[derive(Debug, Clone, Copy)]
-    enum RequestState {
+    #[derive(Debug, Default, Clone, Copy)]
+    enum Inner {
+        #[default]
         BeginRequest,
         Params,
         Stdin,
@@ -362,16 +446,13 @@ pub(crate) mod server {
         Parse(Frame),
         EndOfStream(RecordType),
         Abort,
-        Unsupported,
     }
 
     impl Transition {
         pub(crate) fn parse(frame: Frame) -> Transition {
             let (header, payload) = frame.as_parts();
 
-            if header.id == 0 {
-                return Transition::Unsupported;
-            }
+            assert!(header.id > 0);
 
             if !payload.is_empty() {
                 Transition::Parse(frame)
@@ -383,30 +464,39 @@ pub(crate) mod server {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     pub(crate) struct State {
-        inner: RequestState,
+        inner: Inner,
         role: Option<Role>,
         defrag: Defrag,
     }
 
     impl State {
+        pub(crate) fn new() -> Self {
+            State {
+                inner: Inner::BeginRequest,
+                role: None,
+                defrag: Defrag::new(),
+            }
+        }
+
+        /// Return a Part when it can be fully constructed, otherwise returns None.
         pub(crate) fn parse_frame(&mut self, transition: Transition) -> ParseResult<Option<Part>> {
             let part = match (self.inner, transition) {
-                (RequestState::BeginRequest, Transition::Parse(frame)) => {
+                (Inner::BeginRequest, Transition::Parse(frame)) => {
                     let (header, payload) = frame.into_parts();
 
                     validate_record_type(header.record_type, Standard::BeginRequest)?;
 
-                    let begin_request = BeginRequest::decode(payload)?;
+                    let begin_request = BeginRequest::decode_frame(payload)?;
 
                     self.role = Some(begin_request.get_role());
-                    self.inner = RequestState::Params;
+                    self.inner = Inner::Params;
 
-                    Some(begin_request.into())
+                    Some(Part::from(begin_request))
                 }
 
-                (RequestState::Params, Transition::Parse(frame)) => {
+                (Inner::Params, Transition::Parse(frame)) => {
                     let (header, payload) = frame.into_parts();
 
                     validate_record_type(header.record_type, Standard::Params)?;
@@ -415,21 +505,25 @@ pub(crate) mod server {
 
                     None
                 }
-                (RequestState::Params, Transition::EndOfStream(record_type)) => {
+                (Inner::Params, Transition::EndOfStream(record_type)) => {
                     validate_record_type(record_type, Standard::Params)?;
 
-                    let record = self
+                    let params = self
                         .defrag
                         .handle_end_of_stream()
-                        .map(Params::decode)
+                        .map(Params::decode_frame)
                         .transpose()?;
 
-                    self.inner = RequestState::Stdin;
+                    self.inner = Inner::Stdin;
 
-                    record.map(Part::from)
+                    if params.is_none() {
+                        return Err(ParseRequestError::ParamsMustBeLargerThanZero);
+                    }
+
+                    params.map(Part::from)
                 }
 
-                (RequestState::Stdin, Transition::Parse(frame)) => {
+                (Inner::Stdin, Transition::Parse(frame)) => {
                     let (header, payload) = frame.into_parts();
 
                     validate_record_type(header.record_type, Standard::Stdin)?;
@@ -438,24 +532,27 @@ pub(crate) mod server {
 
                     None
                 }
-                (RequestState::Stdin, Transition::EndOfStream(record_type)) => {
+                (Inner::Stdin, Transition::EndOfStream(record_type)) => {
                     validate_record_type(record_type, Standard::Stdin)?;
 
-                    let record = self
+                    let stdin = self
                         .defrag
                         .handle_end_of_stream()
-                        .map(Stdin::decode)
+                        .map(Stdin::decode_frame)
                         .transpose()?;
 
-                    self.inner = match self.role.ok_or(ParseError::InvalidState)? {
-                        Role::Filter => RequestState::Data,
-                        _ => RequestState::Finished,
+                    self.inner = match self
+                        .role
+                        .expect("Invalid state reached while parsing the request.")
+                    {
+                        Role::Filter => Inner::Data,
+                        _ => Inner::Finished,
                     };
 
-                    record.map(Part::from)
+                    Some(Part::from(stdin))
                 }
 
-                (RequestState::Data, Transition::Parse(frame)) => {
+                (Inner::Data, Transition::Parse(frame)) => {
                     let (header, payload) = frame.into_parts();
 
                     validate_record_type(header.record_type, Standard::Data)?;
@@ -464,81 +561,85 @@ pub(crate) mod server {
 
                     None
                 }
-                (RequestState::Data, Transition::EndOfStream(record_type)) => {
+                (Inner::Data, Transition::EndOfStream(record_type)) => {
                     validate_record_type(record_type, Standard::Data)?;
 
-                    let record = self
+                    let data = self
                         .defrag
                         .handle_end_of_stream()
-                        .map(Data::decode)
+                        .map(Data::decode_frame)
                         .transpose()?;
 
-                    self.inner = RequestState::Finished;
+                    self.inner = Inner::Finished;
 
-                    record.map(Part::from)
+                    if data.is_none() {
+                        return Err(ParseRequestError::DataIsRequiredForFilterApplications);
+                    }
+
+                    data.map(Part::from)
                 }
 
                 // Abort
-                (
-                    RequestState::Params | RequestState::Stdin | RequestState::Data,
-                    Transition::Abort,
-                ) => {
-                    self.inner = RequestState::Aborted;
+                (Inner::Params | Inner::Stdin | Inner::Data, Transition::Abort) => {
+                    self.inner = Inner::Aborted;
 
-                    Some(AbortRequest.into())
-                }
-
-                // Unsupported
-                (_, Transition::Unsupported) => {
-                    // TODO: Add Logger warning.
-                    println!("Record ignored: management records are currently not supported.");
-                    return Ok(None);
+                    Some(Part::AbortRequest)
                 }
 
                 // Errors
-                (_, Transition::EndOfStream(_)) => return Err(ParseError::UnexpectedEndOfStream),
-                (_, Transition::Abort) => return Err(ParseError::UnexpectedAbortRequest),
+                (Inner::Finished, _) => return Err(ParseRequestError::InvalidState),
 
-                _ => return Err(ParseError::InvalidState),
+                (_, Transition::Abort) => return Err(ParseRequestError::UnexpectedAbortRequest),
+                (_, Transition::EndOfStream(record_type)) => {
+                    return Err(ParseRequestError::UnexpectedRecordType(record_type))
+                }
+                (_, Transition::Parse(frame)) => {
+                    return Err(ParseRequestError::UnexpectedRecordType(
+                        frame.header.record_type,
+                    ))
+                }
             };
 
             Ok(part)
         }
     }
 
-    impl Default for State {
-        fn default() -> Self {
-            Self {
-                inner: RequestState::BeginRequest,
-                role: None,
-                defrag: Defrag::new(),
-            }
+    #[derive(Debug)]
+    pub enum ParseRequestError {
+        InvalidState,
+        UnexpectedRecordType(RecordType),
+
+        // Specific errors.
+        UnexpectedAbortRequest,
+        ParamsMustBeLargerThanZero,
+        DataIsRequiredForFilterApplications,
+
+        // Defrag
+        ExceededMaximumStreamSize(ExceededMaximumStreamSize),
+
+        DecodeFrameError(DecodeFrameError),
+        StdIoError(std::io::Error),
+    }
+
+    impl From<std::io::Error> for ParseRequestError {
+        fn from(value: std::io::Error) -> Self {
+            ParseRequestError::StdIoError(value)
+        }
+    }
+
+    impl From<DecodeFrameError> for ParseRequestError {
+        fn from(value: DecodeFrameError) -> Self {
+            ParseRequestError::DecodeFrameError(value)
+        }
+    }
+
+    impl From<ExceededMaximumStreamSize> for ParseRequestError {
+        fn from(value: ExceededMaximumStreamSize) -> Self {
+            ParseRequestError::ExceededMaximumStreamSize(value)
         }
     }
 }
 
-#[derive(Debug)]
-pub enum ParseError {
-    InvalidState,
-    UnexpectedRecordType(RecordType),
-    UnexpectedEndOfStream,
-    UnexpectedAbortRequest,
-
-    // Defrag
-    ExceededMaximumStreamSize((usize, usize)),
-
-    DecodeFrameError(DecodeFrameError),
-    StdIoError(std::io::Error),
-}
-
-impl From<std::io::Error> for ParseError {
-    fn from(value: std::io::Error) -> Self {
-        ParseError::StdIoError(value)
-    }
-}
-
-impl From<DecodeFrameError> for ParseError {
-    fn from(value: DecodeFrameError) -> Self {
-        ParseError::DecodeFrameError(value)
-    }
-}
+pub trait ParseError {}
+impl ParseError for client::ParseResponseError {}
+impl ParseError for server::ParseRequestError {}

@@ -17,6 +17,10 @@ impl ByteSlice {
         Some(Self { bytes })
     }
 
+    pub fn bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+
     /// Assumes `!bytes.is_empty()`.
     pub fn new_unchecked(bytes: Bytes) -> Self {
         Self { bytes }
@@ -64,5 +68,11 @@ impl ByteSlice {
 
     pub fn validate_non_empty(bytes: &[u8]) -> bool {
         !bytes.is_empty()
+    }
+}
+
+impl AsRef<Bytes> for ByteSlice {
+    fn as_ref(&self) -> &Bytes {
+        &self.bytes
     }
 }

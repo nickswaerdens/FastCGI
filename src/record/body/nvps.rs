@@ -2,14 +2,19 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::record::{DecodeFrameError, EncodeFrameError};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NameValuePairs {
     inner: Vec<NameValuePair>,
 }
 
 impl NameValuePairs {
-    fn new() -> Self {
-        Self { inner: Vec::new() }
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert_nvp(mut self, nvp: NameValuePair) -> Self {
+        self.inner.push(nvp);
+        self
     }
 
     pub fn size_hint(&self) -> usize {
@@ -188,15 +193,15 @@ pub struct NameValuePair {
 }
 
 impl NameValuePair {
-    pub fn new(name: impl Into<Bytes>, value: Option<impl Into<Bytes>>) -> Option<Self> {
-        let name: Bytes = name.into();
-        let value: Option<Bytes> = value.map(Into::into);
+    pub fn new(name: impl Into<Bytes>, value: impl Into<Bytes>) -> Option<Self> {
+        let name = name.into();
+        let value = value.into();
 
-        if !Param::validate(&name) || !value.as_ref().map_or(true, |x| Param::validate(x)) {
+        if !Param::validate(&name) || !Param::validate(&value) {
             return None;
         }
 
-        Some(Self::new_unchecked(name, value))
+        Some(Self::new_unchecked(name, Some(value)))
     }
 
     pub fn new_empty(name: impl Into<Bytes>) -> Option<Self> {

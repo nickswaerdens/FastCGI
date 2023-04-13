@@ -14,13 +14,7 @@ impl UnknownType {
         Self { record_type }
     }
 
-    pub fn get_record_type(&self) -> u8 {
-        self.record_type
-    }
-}
-
-impl EncodeFrame for UnknownType {
-    fn encode(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
+    fn encode<B: BufMut>(self, dst: &mut B) -> Result<(), EncodeFrameError> {
         if dst.remaining_mut() < 8 {
             return Err(EncodeFrameError::InsufficientSizeInBuffer);
         }
@@ -30,9 +24,7 @@ impl EncodeFrame for UnknownType {
 
         Ok(())
     }
-}
 
-impl DecodeFrame for UnknownType {
     fn decode(src: BytesMut) -> Result<Self, DecodeFrameError> {
         if src.len() != 8 {
             return Err(DecodeFrameError::CorruptedFrame);
@@ -43,6 +35,39 @@ impl DecodeFrame for UnknownType {
             return Err(DecodeFrameError::CorruptedFrame);
         };
 
-        Ok(UnknownType::new(src[0]))
+        Ok(Self::new(src[0]))
+    }
+
+    pub fn get_record_type(&self) -> u8 {
+        self.record_type
+    }
+}
+
+impl EncodeFrame for UnknownType {
+    fn encode_frame(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
+        self.encode(dst)
+    }
+}
+
+impl DecodeFrame for UnknownType {
+    fn decode_frame(src: BytesMut) -> Result<Self, DecodeFrameError> {
+        Self::decode(src)
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_decode() {
+        let unknown_request = UnknownType::new(5);
+
+        let mut buf = BytesMut::with_capacity(8);
+
+        unknown_request.encode(&mut buf).unwrap();
+
+        let result = UnknownType::decode(buf).unwrap();
+
+        assert_eq!(unknown_request, result);
     }
 }

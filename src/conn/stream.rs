@@ -1,8 +1,8 @@
 use crate::codec::Frame;
 
-use super::state::{ParseError, State};
+use super::state::State;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Stream<S: State> {
     state: S,
 }
@@ -11,20 +11,15 @@ impl<S: State> Stream<S>
 where
     S: State,
 {
-    pub(crate) fn parse(&mut self, frame: Frame) -> Result<Option<S::Output>, ParseError> {
+    pub(crate) fn new() -> Self {
+        Stream {
+            state: S::default(),
+        }
+    }
+
+    pub(crate) fn parse(&mut self, frame: Frame) -> Result<Option<S::Output>, S::Error> {
         let transition = S::parse_transition(frame)?;
 
         S::parse_frame(&mut self.state, transition)
-    }
-}
-
-impl<S> Default for Stream<S>
-where
-    S: State + Default,
-{
-    fn default() -> Self {
-        Self {
-            state: S::default(),
-        }
     }
 }

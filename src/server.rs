@@ -4,13 +4,11 @@ use crate::{
     conn::{
         connection::{Connection, ConnectionRecvError, ConnectionSendError},
         endpoint,
+        state::server::ParseRequestError,
     },
-    record::{
-        begin_request::Role, end_request::ProtocolStatus, BeginRequest, EndRequest, Header,
-        IntoRecord, IntoStreamChunker,
-    },
-    request::{Part, Request},
+    request::Request,
     response::Response,
+    FastcgiServerError,
 };
 
 /// TODO: design API.
@@ -27,118 +25,42 @@ impl<T: AsyncRead + AsyncWrite> Server<T> {
     }
 }
 
-impl<T: AsyncRead + Unpin> Server<T> {
-    /// Currently only works with the "full" parser mode.
-    pub async fn recv_request(&mut self) -> Result<Option<Request>, ConnectionRecvError> {
-        let begin_request = self.await_begin_request().await?;
+impl<T: AsyncRead + AsyncWrite + Unpin> Server<T> {
+    pub async fn handle_request(
+        &mut self,
+        f: impl Fn(Result<Request, FastcgiServerError>) -> Response,
+    ) -> Result<(), FastcgiServerError> {
+        if let Some(result) = self.recv_request().await.transpose() {
+            let result = result.map_err(|e| {
+                // TODO: log this.
+                println!("[SERVER]: Request rejected: {:?}", e);
+                FastcgiServerError::from(e)
+            });
 
-        let mut request = Request {
-            role: begin_request.get_role(),
-            ..Default::default()
-        };
-
-        loop {
-            match self.connection.poll_frame().await {
-                Some(Ok(Some(req))) => match req {
-                    /*
-                    Should no longer be received.
-                    BeginRequest(x) => {
-                        request.role = Some(x.get_role());
-                    }
-                    */
-                    Part::AbortRequest(_) => {
-                        self.connection.close_stream();
-
-                        return Ok(None);
-                    }
-                    Part::Params(x) => {
-                        request.params = Some(x);
-                    }
-                    Part::Stdin(x) => {
-                        request.stdin = Some(x);
-
-                        match request.role {
-                            Role::Responder | Role::Authorizer => {
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                    Part::Data(x) => {
-                        request.data = Some(x);
-
-                        break;
-                    }
-                    _ => {
-                        dbg!("Management records are not yet implemented.");
-                    } /*
-                      // Management records can be received at any time
-                      // These records should be sent to a separate channel.
-                      GetValues(x) => {}
-                      Custom(x) => {}
-                      */
-                },
-                Some(Err(e)) => Err(e)?,
-                _ => {}
-            }
+            self.send_response(f(result)).await?
+        } else {
+            // TODO: log this.
+            println!("[SERVER]: Request was aborted.");
         }
 
-        Ok(Some(request))
+        Ok(())
     }
+}
 
-    async fn await_begin_request(&mut self) -> Result<BeginRequest, ConnectionRecvError> {
-        loop {
-            match self.connection.poll_frame().await {
-                Some(Ok(Some(req))) => match req {
-                    Part::BeginRequest(begin_request) => {
-                        return Ok(BeginRequest::new(begin_request.get_role()));
-                    }
-                    _ => {
-                        dbg!("Management records are not yet implemented.");
-                    } /*
-                      // Management records can be received at any time
-                      // These records should be sent to a separate channel.
-                      GetValues(x) => {}
-                      Custom(x) => {}
-                      */
-                },
-                Some(Err(e)) => Err(e)?,
-                _ => {}
-            }
-        }
+impl<T: AsyncRead + Unpin> Server<T> {
+    async fn recv_request(
+        &mut self,
+    ) -> Result<Option<Request>, ConnectionRecvError<ParseRequestError>> {
+        let result = Request::recv(&mut self.connection).await;
+
+        self.connection.close_stream();
+
+        result
     }
 }
 
 impl<T: AsyncWrite + Unpin> Server<T> {
-    pub async fn send_response(&mut self, res: Response) -> Result<(), ConnectionSendError> {
-        let header = Header::new(1);
-
-        // TODO: Stdout and Stderr should be interleaved here.
-        self.send_stream(header, res.stdout).await?;
-
-        if res.stderr.is_some() {
-            self.send_stream(header, res.stderr).await?;
-        }
-
-        let end_request = EndRequest::new(0, ProtocolStatus::RequestComplete).into_record(header);
-        self.connection.feed_frame(end_request).await?;
-
-        // Make sure all the data was written out.
-        self.connection.flush().await?;
-        self.connection.close_stream();
-
-        Ok(())
-    }
-
-    async fn send_stream<S: IntoStreamChunker>(
-        &mut self,
-        header: Header,
-        stream: Option<S>,
-    ) -> Result<(), ConnectionSendError> {
-        if let Some(data) = stream {
-            self.connection.feed_stream(data.into_record(header)).await
-        } else {
-            self.connection.feed_empty::<S::Item>(header).await
-        }
+    async fn send_response(&mut self, res: Response) -> Result<(), ConnectionSendError> {
+        res.send(&mut self.connection).await
     }
 }

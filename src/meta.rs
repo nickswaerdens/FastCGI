@@ -2,8 +2,8 @@ use crate::record::{Custom, RecordType};
 
 mod private {
     use crate::record::{
-        AbortRequest, BeginRequest, Data, Empty, EndRequest, GetValues, GetValuesResult, Params,
-        Stderr, Stdin, Stdout, UnknownType,
+        AbortRequest, BeginRequest, Data, EndOfStream, EndRequest, GetValues, GetValuesResult,
+        Params, Stderr, Stdin, Stdout, UnknownType,
     };
 
     use super::*;
@@ -23,8 +23,8 @@ mod private {
     impl Sealed for GetValuesResult {}
     impl Sealed for UnknownType {}
 
-    // Empty stream records.
-    impl<T: Meta<DataKind = Stream>> Sealed for Empty<T> {}
+    // EndOfStream stream records.
+    impl<T: Meta<DataKind = Stream>> Sealed for EndOfStream<T> {}
 
     // Custom user records.
     impl<T: MetaExt> Sealed for T {}

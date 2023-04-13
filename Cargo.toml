@@ -1,5 +1,5 @@
 [package]
-name = "FastCGI"
+name = "fastcgi"
 version = "0.1.0"
 edition = "2021"
 categories = ["fastcgi", "network", "async"]

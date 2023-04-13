@@ -18,7 +18,7 @@ impl GetValues {
 }
 
 impl EncodeFrame for GetValues {
-    fn encode(mut self, buf: &mut Buffer) -> Result<(), EncodeFrameError> {
+    fn encode_frame(mut self, buf: &mut Buffer) -> Result<(), EncodeFrameError> {
         self.0
             .encode_chunk(buf)
             .unwrap_or(Err(EncodeFrameError::InsufficientSizeInBuffer))
@@ -26,7 +26,7 @@ impl EncodeFrame for GetValues {
 }
 
 impl DecodeFrame for GetValues {
-    fn decode(src: BytesMut) -> Result<Self, DecodeFrameError> {
+    fn decode_frame(src: BytesMut) -> Result<Self, DecodeFrameError> {
         Ok(GetValues(NameValuePairs::decode(src, Self::validate)?))
     }
 }
@@ -43,7 +43,7 @@ impl GetValuesResult {
 }
 
 impl EncodeFrame for GetValuesResult {
-    fn encode(mut self, buf: &mut Buffer) -> Result<(), EncodeFrameError> {
+    fn encode_frame(mut self, buf: &mut Buffer) -> Result<(), EncodeFrameError> {
         self.0
             .encode_chunk(buf)
             .unwrap_or(Err(EncodeFrameError::InsufficientSizeInBuffer))
@@ -51,7 +51,7 @@ impl EncodeFrame for GetValuesResult {
 }
 
 impl DecodeFrame for GetValuesResult {
-    fn decode(src: BytesMut) -> Result<Self, DecodeFrameError> {
+    fn decode_frame(src: BytesMut) -> Result<Self, DecodeFrameError> {
         Ok(GetValuesResult(NameValuePairs::decode(
             src,
             Self::validate,

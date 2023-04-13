@@ -6,13 +6,15 @@ use crate::codec::Buffer;
 
 use super::{DecodeFrame, DecodeFrameError, EncodeChunk, EncodeFrameError};
 
-pub(crate) enum Kind {
+// TODO: temporarily pub
+enum Kind {
     ByteSlice(Bytes),
-    Reader(Box<dyn Read + Send + 'static>),
+    Reader((Box<dyn Read + Send + 'static>, u64)),
 }
 
+#[derive(Debug)]
 pub struct Data {
-    pub(crate) kind: Kind,
+    kind: Kind,
 }
 
 impl Data {
@@ -23,9 +25,24 @@ impl Data {
     }
 
     /// Constructs a new data reader.
-    pub fn new_reader<R: Read + Send + 'static>(reader: R) -> Self {
+    pub fn new_reader<R: Read + Send + 'static>(reader: R, length: u64) -> Self {
         Self {
-            kind: Kind::Reader(Box::new(reader)),
+            kind: Kind::Reader((Box::new(reader), length)),
+        }
+    }
+
+    pub fn length(&self) -> u64 {
+        match &self.kind {
+            Kind::ByteSlice(bytes) => bytes.len() as u64,
+            Kind::Reader((_, length)) => *length,
+        }
+    }
+
+    pub fn byte_slice(&self) -> Option<&Bytes> {
+        if let Kind::ByteSlice(ref bytes) = self.kind {
+            Some(bytes)
+        } else {
+            None
         }
     }
 }
@@ -48,9 +65,13 @@ impl From<Bytes> for Data {
     }
 }
 
-impl From<File> for Data {
-    fn from(f: File) -> Self {
-        Self::new_reader(f)
+impl TryFrom<File> for Data {
+    type Error = std::io::Error;
+
+    fn try_from(f: File) -> Result<Self, Self::Error> {
+        let metadata = f.metadata()?.len();
+
+        Ok(Self::new_reader(f, metadata))
     }
 }
 
@@ -66,7 +87,7 @@ impl EncodeChunk for Data {
 
                 buf.put(bytes.split_to(n));
             }
-            Kind::Reader(reader) => {
+            Kind::Reader((reader, _)) => {
                 let mut handle = reader.take(buf.remaining_mut() as u64);
                 let mut writer = buf.writer();
 
@@ -83,24 +104,24 @@ impl EncodeChunk for Data {
 }
 
 impl DecodeFrame for Data {
-    fn decode(src: BytesMut) -> Result<Data, DecodeFrameError> {
+    fn decode_frame(src: BytesMut) -> Result<Data, DecodeFrameError> {
         Ok(Data {
             kind: Kind::ByteSlice(src.freeze()),
         })
     }
 }
 
-impl fmt::Debug for Data {
+impl fmt::Debug for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("Data");
 
-        match &self.kind {
+        match self {
             Kind::ByteSlice(bytes) => {
-                debug.field("kind", &("Kind::ByteSlice", bytes));
+                format!("ByteSlice: {:?}", bytes);
             }
             Kind::Reader(_) => {
                 // TODO: Improve this debug implementation.
-                debug.field("kind", &"Kind::Reader");
+                "Reader".to_string();
             }
         };
 

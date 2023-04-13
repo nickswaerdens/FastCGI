@@ -60,17 +60,7 @@ impl BeginRequest {
         self
     }
 
-    pub fn get_role(&self) -> Role {
-        self.role
-    }
-
-    pub fn get_keep_conn(&self) -> bool {
-        self.keep_conn
-    }
-}
-
-impl EncodeFrame for BeginRequest {
-    fn encode(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
+    pub fn encode<B: BufMut>(self, dst: &mut B) -> Result<(), EncodeFrameError> {
         if dst.remaining_mut() < 8 {
             return Err(EncodeFrameError::InsufficientSizeInBuffer);
         }
@@ -81,9 +71,7 @@ impl EncodeFrame for BeginRequest {
 
         Ok(())
     }
-}
 
-impl DecodeFrame for BeginRequest {
     fn decode(src: BytesMut) -> Result<BeginRequest, DecodeFrameError> {
         if src.len() != 8 {
             return Err(DecodeFrameError::InsufficientDataInBuffer);
@@ -103,5 +91,46 @@ impl DecodeFrame for BeginRequest {
         } else {
             Ok(begin_request)
         }
+    }
+
+    pub fn get_role(&self) -> Role {
+        self.role
+    }
+
+    pub fn get_keep_conn(&self) -> bool {
+        self.keep_conn
+    }
+
+    pub fn from_parts(role: Role, keep_conn: bool) -> Self {
+        Self { role, keep_conn }
+    }
+}
+
+impl EncodeFrame for BeginRequest {
+    fn encode_frame(self, dst: &mut Buffer) -> Result<(), EncodeFrameError> {
+        self.encode(dst)
+    }
+}
+
+impl DecodeFrame for BeginRequest {
+    fn decode_frame(src: BytesMut) -> Result<BeginRequest, DecodeFrameError> {
+        Self::decode(src)
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_decode() {
+        let begin_request = BeginRequest::new(Role::Filter).keep_conn();
+
+        let mut buf = BytesMut::with_capacity(8);
+
+        begin_request.encode(&mut buf).unwrap();
+
+        let result = BeginRequest::decode(buf).unwrap();
+
+        assert_eq!(begin_request, result);
     }
 }

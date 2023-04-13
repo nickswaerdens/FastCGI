@@ -7,7 +7,10 @@ use tokio_util::codec::Framed;
 use crate::{
     codec::{DecodeCodecError, EncodeCodecError, FastCgiCodec, Frame},
     meta::{self, Meta},
-    record::{Empty, EncodeFrame, EncodeFrameError, Header, IntoStreamChunker, Record},
+    record::{
+        EncodeFrame, EncodeFrameError, EndOfStream, Header, IntoStreamChunker, ProtocolStatus,
+        Record,
+    },
 };
 
 use super::{
@@ -44,7 +47,8 @@ where
         // TODO
         self.streams.take();
 
-        dbg!("Closed the stream");
+        // TODO, log this.
+        // dbg!("Closed the stream");
     }
 }
 
@@ -52,27 +56,31 @@ impl<T, P> Connection<T, P>
 where
     T: AsyncRead + Unpin,
     P: Endpoint,
-    P::State: Default,
 {
     /// Poll for the next, parsed frame.
     pub async fn poll_frame(
         &mut self,
-    ) -> Option<Result<Option<<P::State as State>::Output>, ConnectionRecvError>> {
+    ) -> Option<
+        Result<
+            Option<<P::State as State>::Output>,
+            ConnectionRecvError<<P::State as State>::Error>,
+        >,
+    > {
         loop {
             let frame = match self.transport.next().await {
-                Some(Ok(x)) => x,
+                Some(Ok(frame)) => frame,
                 Some(Err(e)) => return Some(Err(e).map_err(ConnectionRecvError::from)),
                 _ => return None,
             };
 
-            let record = self
-                .poll_frame_inner(frame)
-                .map_err(ConnectionRecvError::from);
-
-            match record {
-                Ok(Some(x)) => return Some(Ok(Some(x))),
-                Err(e) => return Some(Err(e)),
-                _ => {}
+            if frame.header.id == 0 {
+                // Handle management frames.
+                dbg!("Frame ignored: management records are currently not supported.");
+            } else {
+                match self.poll_frame_inner(frame) {
+                    Ok(part) => return Some(Ok(part)),
+                    Err(e) => return Some(Err(ConnectionRecvError::from(e))),
+                }
             }
         }
     }
@@ -80,19 +88,18 @@ where
     fn poll_frame_inner(
         &mut self,
         frame: Frame,
-    ) -> Result<Option<<P::State as State>::Output>, ConnectionRecvError> {
-        let record = match self.streams.as_mut() {
-            Some(stream) => stream.parse(frame)?,
-            None => {
-                let mut stream = Stream::default();
-                let record = stream.parse(frame)?;
+    ) -> Result<Option<<P::State as State>::Output>, <P::State as State>::Error> {
+        if let Some(stream) = self.streams.as_mut() {
+            Ok(stream.parse(frame)?)
+        } else {
+            // Create a new stream state.
+            // TODO: id must be available.
+            let mut stream = Stream::default();
+            let record = stream.parse(frame)?;
 
-                self.streams.replace(stream);
-                record
-            }
-        };
-
-        Ok(record)
+            self.streams.replace(stream);
+            Ok(record)
+        }
     }
 }
 
@@ -101,7 +108,10 @@ where
     T: AsyncWrite + Unpin,
     P: Endpoint,
 {
-    pub async fn feed_frame<D>(&mut self, record: Record<D>) -> Result<(), ConnectionSendError>
+    pub(crate) async fn feed_frame<D>(
+        &mut self,
+        record: Record<D>,
+    ) -> Result<(), ConnectionSendError>
     where
         D: EncodeFrame,
     {
@@ -111,7 +121,10 @@ where
             .map_err(ConnectionSendError::from)
     }
 
-    pub async fn feed_stream<S>(&mut self, record: Record<S>) -> Result<(), ConnectionSendError>
+    pub(crate) async fn feed_stream<S>(
+        &mut self,
+        record: Record<S>,
+    ) -> Result<(), ConnectionSendError>
     where
         S: IntoStreamChunker,
     {
@@ -125,10 +138,10 @@ where
             self.transport.feed(&mut record).await?;
         }
 
-        let empty_record = record.map(|_| Empty::<S::Item>::new());
+        let record = record.map(|_| EndOfStream::<S::Item>::new());
 
         self.transport
-            .feed(empty_record)
+            .feed(record)
             .await
             .map_err(ConnectionSendError::from)
     }
@@ -137,7 +150,7 @@ where
     where
         S: Meta<DataKind = meta::Stream>,
     {
-        let record = Record::from_parts(header, Empty::<S>::new());
+        let record = Record::from_parts(header, EndOfStream::<S>::new());
 
         self.transport
             .feed(record)
@@ -172,26 +185,33 @@ impl From<EncodeFrameError> for ConnectionSendError {
 }
 
 #[derive(Debug)]
-pub enum ConnectionRecvError {
+pub enum ConnectionRecvError<T: ParseError> {
     DecodeCodecError(DecodeCodecError),
-    ParserError(ParseError),
+    ParserError(T),
+    ProtocolStatus(ProtocolStatus),
     UnexpectedEndOfInput,
     StdIoError(std::io::Error),
 }
 
-impl From<DecodeCodecError> for ConnectionRecvError {
+impl<T: ParseError> From<DecodeCodecError> for ConnectionRecvError<T> {
     fn from(value: DecodeCodecError) -> Self {
         ConnectionRecvError::DecodeCodecError(value)
     }
 }
 
-impl From<ParseError> for ConnectionRecvError {
-    fn from(value: ParseError) -> Self {
+impl<T: ParseError> From<T> for ConnectionRecvError<T> {
+    fn from(value: T) -> Self {
         ConnectionRecvError::ParserError(value)
     }
 }
 
-impl From<std::io::Error> for ConnectionRecvError {
+impl<T: ParseError> From<ProtocolStatus> for ConnectionRecvError<T> {
+    fn from(value: ProtocolStatus) -> Self {
+        ConnectionRecvError::ProtocolStatus(value)
+    }
+}
+
+impl<T: ParseError> From<std::io::Error> for ConnectionRecvError<T> {
     fn from(value: std::io::Error) -> Self {
         ConnectionRecvError::StdIoError(value)
     }
