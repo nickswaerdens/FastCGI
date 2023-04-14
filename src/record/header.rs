@@ -1,6 +1,8 @@
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
-use crate::{meta::Meta, FCGI_VERSION_1};
+use crate::{codec::DecodeCodecError, FCGI_VERSION_1};
+
+use super::RecordType;
 
 pub const HEADER_SIZE: usize = 8;
 
@@ -15,6 +17,7 @@ pub type Id = u16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
     pub(crate) id: Id,
+    pub(crate) record_type: RecordType,
     pub(crate) padding: Option<Padding>,
 }
 
@@ -26,15 +29,16 @@ pub enum Padding {
 }
 
 impl Header {
-    pub fn new(id: Id) -> Self {
+    pub(crate) fn new(id: Id, record_type: RecordType) -> Self {
         Self {
             id,
+            record_type,
             padding: Some(Padding::Automatic),
         }
     }
 
-    pub fn with_padding(mut self, padding: Option<Padding>) -> Self {
-        self.padding = padding;
+    pub fn with_padding(mut self, padding: Padding) -> Self {
+        self.padding = Some(padding);
         self
     }
 
@@ -56,18 +60,48 @@ impl Header {
         self
     }
 
-    pub(crate) fn encode<T: Meta>(
-        self,
+    pub fn encode<B: BufMut>(
+        record_type: RecordType,
+        id: u16,
         content_length: u16,
         padding_length: u8,
-        dst: &mut BytesMut,
+        dst: &mut B,
     ) {
         dst.put_u8(FCGI_VERSION_1);
-        dst.put_u8(T::TYPE.into());
-        dst.put_u16(self.id);
+        dst.put_u8(record_type.into());
+        dst.put_u16(id);
         dst.put_u16(content_length);
         dst.put_u8(padding_length);
         dst.put_u8(0);
+    }
+
+    /// Returns a triple containing the header, content_length, and padding length.
+    pub fn decode(src: &mut BytesMut) -> Result<Option<(Header, u16, u8)>, DecodeCodecError> {
+        if src.len() < HEADER_SIZE {
+            return Ok(None);
+        }
+
+        if src[0] != FCGI_VERSION_1 {
+            return Err(DecodeCodecError::IncompatibleVersion);
+        }
+
+        if src[7] != 0 {
+            return Err(DecodeCodecError::CorruptedHeader);
+        }
+
+        let content_length = u16::from_be_bytes(src[4..6].try_into().unwrap());
+        let padding_length = src[6];
+
+        let header = Header {
+            id: u16::from_be_bytes(src[2..4].try_into().unwrap()),
+            record_type: RecordType::from(src[1]),
+            padding: Padding::from_u8(padding_length),
+        };
+
+        // Discard header from src.
+        src.advance(HEADER_SIZE);
+
+        Ok(Some((header, content_length, padding_length)))
     }
 }
 

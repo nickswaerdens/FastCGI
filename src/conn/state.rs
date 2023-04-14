@@ -4,8 +4,8 @@ use crate::{codec::Frame, request, response};
 
 pub(crate) trait State: Default {
     type Transition;
-    type Output: std::fmt::Debug;
-    type Error: ParseError + std::fmt::Debug;
+    type Output;
+    type Error: ParseError;
 
     fn parse_transition(frame: Frame) -> Result<Self::Transition, Self::Error>;
 
@@ -127,6 +127,10 @@ impl std::fmt::Debug for ExceededMaximumStreamSize {
     }
 }
 
+pub trait ParseError {}
+impl ParseError for client::ParseResponseError {}
+impl ParseError for server::ParseRequestError {}
+
 pub mod client {
     use bytes::BytesMut;
 
@@ -174,11 +178,11 @@ pub mod client {
 
     impl Transition {
         pub(crate) fn parse(frame: Frame) -> ParseResult<Transition> {
-            let (header, payload) = frame.into_parts();
+            let (id, record_type, payload) = frame.into_parts();
 
-            assert!(header.id > 0);
+            assert!(id > 0);
 
-            let transition = match (header.record_type, payload.is_empty()) {
+            let transition = match (record_type, payload.is_empty()) {
                 (RecordType::Standard(Standard::Stdout), false) => Transition::ParseStdout(payload),
                 (RecordType::Standard(Standard::Stdout), true) => Transition::EndOfStdout,
 
@@ -450,16 +454,16 @@ pub mod server {
 
     impl Transition {
         pub(crate) fn parse(frame: Frame) -> Transition {
-            let (header, payload) = frame.as_parts();
+            let (id, record_type, payload) = frame.as_parts();
 
-            assert!(header.id > 0);
+            assert!(id > 0);
 
             if !payload.is_empty() {
                 Transition::Parse(frame)
-            } else if header.record_type == Standard::AbortRequest {
+            } else if record_type == Standard::AbortRequest {
                 Transition::Abort
             } else {
-                Transition::EndOfStream(header.record_type)
+                Transition::EndOfStream(record_type)
             }
         }
     }
@@ -484,9 +488,9 @@ pub mod server {
         pub(crate) fn parse_frame(&mut self, transition: Transition) -> ParseResult<Option<Part>> {
             let part = match (self.inner, transition) {
                 (Inner::BeginRequest, Transition::Parse(frame)) => {
-                    let (header, payload) = frame.into_parts();
+                    let (_, record_type, payload) = frame.into_parts();
 
-                    validate_record_type(header.record_type, Standard::BeginRequest)?;
+                    validate_record_type(record_type, Standard::BeginRequest)?;
 
                     let begin_request = BeginRequest::decode_frame(payload)?;
 
@@ -497,9 +501,9 @@ pub mod server {
                 }
 
                 (Inner::Params, Transition::Parse(frame)) => {
-                    let (header, payload) = frame.into_parts();
+                    let (_, record_type, payload) = frame.into_parts();
 
-                    validate_record_type(header.record_type, Standard::Params)?;
+                    validate_record_type(record_type, Standard::Params)?;
 
                     self.defrag.insert_payload(payload)?;
 
@@ -524,9 +528,9 @@ pub mod server {
                 }
 
                 (Inner::Stdin, Transition::Parse(frame)) => {
-                    let (header, payload) = frame.into_parts();
+                    let (_, record_type, payload) = frame.into_parts();
 
-                    validate_record_type(header.record_type, Standard::Stdin)?;
+                    validate_record_type(record_type, Standard::Stdin)?;
 
                     self.defrag.insert_payload(payload)?;
 
@@ -553,9 +557,9 @@ pub mod server {
                 }
 
                 (Inner::Data, Transition::Parse(frame)) => {
-                    let (header, payload) = frame.into_parts();
+                    let (_, record_type, payload) = frame.into_parts();
 
-                    validate_record_type(header.record_type, Standard::Data)?;
+                    validate_record_type(record_type, Standard::Data)?;
 
                     self.defrag.insert_payload(payload)?;
 
@@ -594,9 +598,7 @@ pub mod server {
                     return Err(ParseRequestError::UnexpectedRecordType(record_type))
                 }
                 (_, Transition::Parse(frame)) => {
-                    return Err(ParseRequestError::UnexpectedRecordType(
-                        frame.header.record_type,
-                    ))
+                    return Err(ParseRequestError::UnexpectedRecordType(frame.record_type))
                 }
             };
 
@@ -639,7 +641,3 @@ pub mod server {
         }
     }
 }
-
-pub trait ParseError {}
-impl ParseError for client::ParseResponseError {}
-impl ParseError for server::ParseRequestError {}

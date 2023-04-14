@@ -9,45 +9,40 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::meta::{self, Meta};
 use crate::record::{
-    EncodeChunk, EncodeFrame, EncodeFrameError, EndOfStream, Header, Id, Record, RecordType,
-    StreamChunker, DEFAULT_MAX_PAYLOAD_SIZE, HEADER_SIZE,
+    EncodeChunk, EncodeFrame, EncodeFrameError, EndOfStream, Header, Id, Padding, Record,
+    RecordType, StreamChunker, DEFAULT_MAX_PAYLOAD_SIZE, HEADER_SIZE,
 };
-
-use crate::FCGI_VERSION_1;
-
-/// Partially parsed header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PartialHeader {
-    pub(crate) id: Id,
-    pub(crate) record_type: RecordType,
-    pub(crate) padding_length: u8,
-}
 
 /// Unparsed frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Frame {
-    pub(crate) header: PartialHeader,
+    pub(crate) id: Id,
+    pub(crate) record_type: RecordType,
     pub(crate) payload: BytesMut,
 }
 
 impl Frame {
-    pub(crate) fn new(header: PartialHeader, payload: BytesMut) -> Self {
-        Self { header, payload }
+    pub(crate) fn new(id: Id, record_type: RecordType, payload: BytesMut) -> Self {
+        Self {
+            id,
+            record_type,
+            payload,
+        }
     }
 
-    pub fn as_parts(&self) -> (&PartialHeader, &BytesMut) {
-        (&self.header, &self.payload)
+    pub fn as_parts(&self) -> (Id, RecordType, &BytesMut) {
+        (self.id, self.record_type, &self.payload)
     }
 
-    pub fn into_parts(self) -> (PartialHeader, BytesMut) {
-        (self.header, self.payload)
+    pub fn into_parts(self) -> (Id, RecordType, BytesMut) {
+        (self.id, self.record_type, self.payload)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 enum DecodeState {
     Header,
-    Payload((PartialHeader, u16)),
+    Payload((Header, u16)),
     Padding(u8),
 }
 
@@ -61,7 +56,7 @@ pub(crate) struct FastCgiCodec {
 }
 
 impl FastCgiCodec {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             buffer: RingBuffer::with_capacity(DEFAULT_MAX_PAYLOAD_SIZE + 1),
             state: DecodeState::Header,
@@ -69,7 +64,7 @@ impl FastCgiCodec {
     }
 
     /// Encodes the header, the currently encoded record body, and the padding of a record.
-    pub fn encode_record<T: Meta>(&mut self, header: Header, dst: &mut BytesMut) {
+    fn encode_record(&mut self, header: Header, dst: &mut BytesMut) {
         let content_length = self.buffer.remaining() as u16;
         let padding_length = header
             .padding
@@ -77,46 +72,32 @@ impl FastCgiCodec {
 
         dst.reserve(HEADER_SIZE + content_length as usize + padding_length as usize);
 
-        header.encode::<T>(content_length, padding_length, dst);
+        Header::encode(
+            header.record_type,
+            header.id,
+            content_length,
+            padding_length,
+            dst,
+        );
+
         dst.put(&mut self.buffer);
         dst.put_bytes(0, padding_length as usize);
     }
 
     /// Decodes a header and reserves space to fit the entire record body, including padding bytes.
-    pub fn decode_header(
-        src: &mut BytesMut,
-    ) -> Result<Option<(PartialHeader, u16)>, DecodeCodecError> {
-        if src.len() < HEADER_SIZE {
-            return Ok(None);
+    fn decode_header(src: &mut BytesMut) -> Result<Option<(Header, u16)>, DecodeCodecError> {
+        if let Some((header, content_length, padding_length)) = Header::decode(src)? {
+            // Grow the buffer for the expected data, plus padding.
+            src.reserve(content_length as usize + padding_length as usize);
+
+            Ok(Some((header, content_length)))
+        } else {
+            Ok(None)
         }
-
-        if src[0] != FCGI_VERSION_1 {
-            return Err(DecodeCodecError::IncompatibleVersion);
-        }
-
-        if src[7] != 0 {
-            return Err(DecodeCodecError::CorruptedHeader);
-        }
-
-        let content_length = u16::from_be_bytes(src[4..6].try_into().unwrap());
-        let padding_length = src[6];
-
-        let header = PartialHeader {
-            id: u16::from_be_bytes(src[2..4].try_into().unwrap()),
-            record_type: RecordType::from(src[1]),
-            padding_length,
-        };
-
-        // Discard header from src.
-        src.advance(HEADER_SIZE);
-
-        // Grow the buffer for the expected data, plus padding.
-        src.reserve(content_length as usize + padding_length as usize);
-
-        Ok(Some((header, content_length)))
     }
 
-    fn decode_body(content_length: u16, src: &mut BytesMut) -> Option<BytesMut> {
+    /// Extracts the body from the source.
+    fn extract_body(content_length: u16, src: &mut BytesMut) -> Option<BytesMut> {
         if src.len() < content_length as usize {
             return None;
         }
@@ -124,12 +105,13 @@ impl FastCgiCodec {
         Some(src.split_to(content_length as usize))
     }
 
-    fn skip_padding(skip: u8, src: &mut BytesMut) -> Option<()> {
-        if src.len() < skip as usize {
+    /// Consumes n padding bytes from the source.
+    fn consume_padding(n: u8, src: &mut BytesMut) -> Option<()> {
+        if src.len() < n as usize {
             return None;
         }
 
-        src.advance(skip as usize);
+        src.advance(n as usize);
 
         Some(())
     }
@@ -148,18 +130,19 @@ where
         // and padding_length are unknown before encoding.
         body.encode_frame(&mut self.buffer.write_only())
             .map_err(|err| {
-                // Read past the invalid data.
+                // Advance the read cursor past the invalid data.
                 self.buffer.advance(self.buffer.remaining_read());
 
                 EncodeCodecError::from(err)
             })?;
 
-        self.encode_record::<T>(header, dst);
+        self.encode_record(header, dst);
 
         Ok(())
     }
 }
 
+// Record<StreamChunker> is not moved, as it may contain data for additional chunks.
 impl<'a, T> Encoder<&'a mut Record<StreamChunker<T>>> for FastCgiCodec
 where
     T: EncodeChunk,
@@ -171,27 +154,21 @@ where
         record: &'a mut Record<StreamChunker<T>>,
         dst: &mut BytesMut,
     ) -> Result<(), Self::Error> {
-        // Write to an internal ring buffer before sending it down stream, as the content_length
-        // and padding_length are unknown before encoding.
-        if let Some(result) = record.body.encode_chunk(&mut self.buffer.write_only()) {
-            result.map_err(|err| {
-                // Set the read cursor past the invalid data.
+        let option = record
+            .body
+            .encode(&mut self.buffer.write_only())
+            .transpose()
+            .map_err(|err| {
+                // Advance the read cursor past the invalid data.
                 self.buffer.advance(self.buffer.remaining_read());
 
                 EncodeCodecError::from(err)
-            })?
-        } else {
-            if self.buffer.remaining_read() > 0 {
-                // TODO: turn this print into a log.
-                println!("Warning: data was ignored...");
+            })?;
 
-                self.buffer.advance(self.buffer.remaining_read());
-            }
-
-            return Ok(());
+        // Encode either a full chunk, or the last chunk.
+        if option.is_some() || self.buffer.remaining_read() > 0 {
+            self.encode_record(record.header, dst);
         }
-
-        self.encode_record::<T>(record.header, dst);
 
         Ok(())
     }
@@ -208,7 +185,7 @@ where
         record: Record<EndOfStream<T>>,
         dst: &mut BytesMut,
     ) -> Result<(), Self::Error> {
-        self.encode_record::<T>(record.header, dst);
+        self.encode_record(record.header, dst);
 
         Ok(())
     }
@@ -231,7 +208,7 @@ impl Decoder for FastCgiCodec {
         // Eat the padding at the end of the previous request.
         // This is done at the start instead of end to return the previous Frame ASAP.
         if let DecodeState::Padding(skip) = self.state {
-            match Self::skip_padding(skip, src) {
+            match Self::consume_padding(skip, src) {
                 Some(_) => self.state = DecodeState::Header,
                 None => return Ok(None),
             }
@@ -252,18 +229,18 @@ impl Decoder for FastCgiCodec {
         };
 
         // Decode body and reserve space for the next header.
-        match Self::decode_body(content_length, src) {
+        match Self::extract_body(content_length, src) {
             Some(data) => {
-                self.state = if header.padding_length > 0 {
-                    DecodeState::Padding(header.padding_length)
+                if let Some(Padding::Static(n)) = header.padding {
+                    self.state = DecodeState::Padding(n);
                 } else {
-                    DecodeState::Header
-                };
+                    self.state = DecodeState::Header;
+                }
 
                 src.reserve(HEADER_SIZE);
 
                 // Padding is stripped during the decoding of frames.
-                Ok(Some(Frame::new(header, data)))
+                Ok(Some(Frame::new(header.id, header.record_type, data)))
             }
             None => Ok(None),
         }

@@ -8,7 +8,7 @@ pub struct StreamChunker<T: EncodeChunk> {
 }
 
 impl<T: EncodeChunk> StreamChunker<T> {
-    pub fn encode_chunk(&mut self, buf: &mut Buffer) -> Option<Result<(), EncodeFrameError>> {
+    pub fn encode(&mut self, buf: &mut Buffer) -> Option<Result<(), EncodeFrameError>> {
         if let Some(stream) = self.inner.as_mut() {
             let result = stream.encode_chunk(buf);
 
@@ -27,17 +27,16 @@ impl<T: EncodeChunk> StreamChunker<T> {
     }
 }
 
-/// Converts `Self` into a `StreamChunker`.
-pub(crate) trait IntoStreamChunker: Sized + EncodeChunk {
+pub(crate) trait IntoStreamChunker {
     type Item: EncodeChunk;
 
-    fn into_stream_chunker(self) -> StreamChunker<Self>;
+    fn into_stream_chunker(self) -> StreamChunker<Self::Item>;
 }
 
 impl<T: EncodeChunk> IntoStreamChunker for T {
     type Item = T;
 
-    fn into_stream_chunker(self) -> StreamChunker<Self> {
+    fn into_stream_chunker(self) -> StreamChunker<Self::Item> {
         StreamChunker { inner: Some(self) }
     }
 }

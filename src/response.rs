@@ -8,7 +8,7 @@ use crate::{
     },
     meta::DynResponseMetaExt,
     record::{
-        EndRequest, GetValuesResult, Header, IntoRecord, ProtocolStatus, Stderr, Stdout,
+        EndOfStream, EndRequest, GetValuesResult, IntoRecord, ProtocolStatus, Stderr, Stdout,
         UnknownType,
     },
 };
@@ -30,26 +30,28 @@ impl Response {
         connection: &mut Connection<T, endpoint::Server>,
     ) -> Result<(), ConnectionSendError> {
         // Id should be received from the connection.
-        let header = Header::new(1);
+        let id = 1;
 
         // TODO: Stdout and Stderr should be interleaved here.
         // Currently not possible due to &mut connection.
         if let Some(stdout) = self.stdout {
-            connection.feed_stream(stdout.into_record(header)).await?;
+            connection.feed_stream(stdout.into_record(id)).await?;
         } else {
-            connection.feed_empty::<Stdout>(header).await?;
+            let eof = EndOfStream::<Stdout>::new().into_record(id);
+            connection.feed_empty(eof).await?;
         };
 
         if let Some(stderr) = self.stderr {
-            connection.feed_stream(stderr.into_record(header)).await?;
+            connection.feed_stream(stderr.into_record(id)).await?;
         } else {
             // Optional
-            connection.feed_empty::<Stderr>(header).await?;
+            let eof = EndOfStream::<Stderr>::new().into_record(id);
+            connection.feed_empty(eof).await?;
         };
 
         // TODO: connection handles the other cases of ProtocolStatus.
         let end_request =
-            EndRequest::new(self.app_status, ProtocolStatus::RequestComplete).into_record(header);
+            EndRequest::new(self.app_status, ProtocolStatus::RequestComplete).into_record(id);
         connection.feed_frame(end_request).await?;
 
         // Make sure all the data was written out.
@@ -65,12 +67,11 @@ impl Response {
         let mut builder = Response::builder();
 
         let response = loop {
-            match connection.poll_frame().await {
-                // Stream state guarantees that stdout and stderr are only passed exactly once.
-                Some(Ok(Some(Part::Stdout(Some(stdout))))) => builder = builder.stdout(stdout),
-                Some(Ok(Some(Part::Stderr(Some(stderr))))) => builder = builder.stderr(stderr),
-                Some(Ok(Some(Part::EndRequest(end_request)))) => {
-                    match end_request.get_protocol_status() {
+            if let Some(result) = connection.poll_frame().await {
+                match result? {
+                    Part::Stdout(Some(stdout)) => builder = builder.stdout(stdout),
+                    Part::Stderr(Some(stderr)) => builder = builder.stderr(stderr),
+                    Part::EndRequest(end_request) => match end_request.get_protocol_status() {
                         ProtocolStatus::RequestComplete => {
                             let app_status = end_request.get_app_status();
                             break builder.app_status(app_status).build();
@@ -80,10 +81,11 @@ impl Response {
 
                             Err(status)?;
                         }
+                    },
+                    _ => {
+                        // Ignore empty Stdout & Stderr
                     }
                 }
-                Some(Err(e)) => return Err(e),
-                _ => {}
             }
         };
 
@@ -180,15 +182,15 @@ impl Default for ResponseBuilder<Init> {
 
 build_enum_with_from_impls! {
     pub(crate) Part {
-        EndRequest(EndRequest),
         Stdout(Option<Stdout>),
         Stderr(Option<Stderr>),
+        EndRequest(EndRequest),
     }
 }
 
 enum ManagementResponse {
-    UnknownType(UnknownType),
     GetValuesResult(GetValuesResult),
+    UnknownType(UnknownType),
     Custom(Box<dyn DynResponseMetaExt>),
 }
 

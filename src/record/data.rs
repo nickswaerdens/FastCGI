@@ -6,7 +6,6 @@ use crate::codec::Buffer;
 
 use super::{DecodeFrame, DecodeFrameError, EncodeChunk, EncodeFrameError};
 
-// TODO: temporarily pub
 enum Kind {
     ByteSlice(Bytes),
     Reader((Box<dyn Read + Send + 'static>, u64)),
@@ -113,15 +112,15 @@ impl DecodeFrame for Data {
 
 impl fmt::Debug for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = f.debug_struct("Data");
+        let mut debug = f.debug_struct("Kind");
 
         match self {
             Kind::ByteSlice(bytes) => {
-                format!("ByteSlice: {:?}", bytes);
+                debug.field("ByteSlice", &format!("{:?}", bytes));
             }
-            Kind::Reader(_) => {
+            Kind::Reader((_, length)) => {
                 // TODO: Improve this debug implementation.
-                "Reader".to_string();
+                debug.field("Reader", &format!("length: {}", length));
             }
         };
 

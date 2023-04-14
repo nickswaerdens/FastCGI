@@ -8,8 +8,7 @@ use crate::{
     codec::{DecodeCodecError, EncodeCodecError, FastCgiCodec, Frame},
     meta::{self, Meta},
     record::{
-        EncodeFrame, EncodeFrameError, EndOfStream, Header, IntoStreamChunker, ProtocolStatus,
-        Record,
+        EncodeFrame, EncodeFrameError, EndOfStream, IntoStreamChunker, ProtocolStatus, Record,
     },
 };
 
@@ -60,12 +59,8 @@ where
     /// Poll for the next, parsed frame.
     pub async fn poll_frame(
         &mut self,
-    ) -> Option<
-        Result<
-            Option<<P::State as State>::Output>,
-            ConnectionRecvError<<P::State as State>::Error>,
-        >,
-    > {
+    ) -> Option<Result<<P::State as State>::Output, ConnectionRecvError<<P::State as State>::Error>>>
+    {
         loop {
             let frame = match self.transport.next().await {
                 Some(Ok(frame)) => frame,
@@ -73,13 +68,16 @@ where
                 _ => return None,
             };
 
-            if frame.header.id == 0 {
+            if frame.id == 0 {
                 // Handle management frames.
                 dbg!("Frame ignored: management records are currently not supported.");
             } else {
                 match self.poll_frame_inner(frame) {
-                    Ok(part) => return Some(Ok(part)),
+                    Ok(Some(part)) => return Some(Ok(part)),
                     Err(e) => return Some(Err(ConnectionRecvError::from(e))),
+                    _ => {
+                        // Received a stream chunk, continue polling for the rest.
+                    }
                 }
             }
         }
@@ -128,7 +126,7 @@ where
     where
         S: IntoStreamChunker,
     {
-        let mut record = record.map(|body| body.into_stream_chunker());
+        let mut record = record.map_to_chunker();
 
         loop {
             if record.body.is_empty() {
@@ -138,7 +136,7 @@ where
             self.transport.feed(&mut record).await?;
         }
 
-        let record = record.map(|_| EndOfStream::<S::Item>::new());
+        let record = record.map_to_empty();
 
         self.transport
             .feed(record)
@@ -146,12 +144,10 @@ where
             .map_err(ConnectionSendError::from)
     }
 
-    pub(crate) async fn feed_empty<S>(&mut self, header: Header) -> Result<(), ConnectionSendError>
-    where
-        S: Meta<DataKind = meta::Stream>,
-    {
-        let record = Record::from_parts(header, EndOfStream::<S>::new());
-
+    pub(crate) async fn feed_empty<S: Meta<DataKind = meta::Stream>>(
+        &mut self,
+        record: Record<EndOfStream<S>>,
+    ) -> Result<(), ConnectionSendError> {
         self.transport
             .feed(record)
             .await

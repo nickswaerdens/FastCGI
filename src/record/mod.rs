@@ -29,7 +29,8 @@ use bytes::BytesMut;
 
 use crate::{
     codec::Buffer,
-    meta::{Application, Client, Discrete, Management, Meta, Server, Stream},
+    impl_std_meta,
+    meta::{Application, Discrete, Management, Meta, Stream},
 };
 
 pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = u16::MAX as usize;
@@ -62,21 +63,6 @@ pub(crate) struct Record<T> {
 }
 
 impl<T> Record<T> {
-    pub fn new(id: Id, body: T) -> Self {
-        Record {
-            header: Header::new(id),
-            body,
-        }
-    }
-
-    /// Maps the type of body `T` to `U`.
-    pub fn map<U>(self, f: fn(T) -> U) -> Record<U> {
-        Record {
-            header: self.header,
-            body: f(self.body),
-        }
-    }
-
     pub fn get_header(&self) -> &Header {
         &self.header
     }
@@ -102,6 +88,27 @@ impl<T> Record<T> {
     }
 }
 
+impl<T> Record<T>
+where
+    T: IntoStreamChunker,
+{
+    pub fn map_to_chunker(self) -> Record<StreamChunker<T::Item>> {
+        Record {
+            header: self.header,
+            body: self.body.into_stream_chunker(),
+        }
+    }
+}
+
+impl<T: EncodeChunk> Record<StreamChunker<T>> {
+    pub fn map_to_empty(self) -> Record<EndOfStream<T>> {
+        Record {
+            header: self.header,
+            body: EndOfStream::new(),
+        }
+    }
+}
+
 impl<T> AsRef<T> for Record<T> {
     fn as_ref(&self) -> &T {
         &self.body
@@ -109,90 +116,27 @@ impl<T> AsRef<T> for Record<T> {
 }
 
 pub(crate) trait IntoRecord: Sized {
-    fn into_record(self, header: Header) -> Record<Self>;
+    fn into_record(self, id: Id) -> Record<Self>;
 }
 
-impl<T> IntoRecord for T {
-    fn into_record(self, header: Header) -> Record<T> {
-        Record::from_parts(header, self)
-    }
-}
-
-#[macro_export]
-macro_rules! build_enum_with_from_impls {
-    (
-        $vis:vis $name:ident {
-            $($variant:tt $(($fool:ty))?,)*
-        }
-    ) => {
-        #[derive(Debug)]
-        $vis enum $name {
-            $($variant $(($fool))?,)*
-        }
-
-        macro_rules! impl_from {
-            ($inner:tt $frame:ty) => {
-                impl From<$frame> for $name {
-                    fn from(value: $frame) -> Self {
-                        $name::$inner(value)
-                    }
-                }
-
-                impl TryFrom<$name> for $frame {
-                    type Error = $name;
-
-                    fn try_from(kind: $name) -> Result<Self, Self::Error> {
-                        match kind {
-                            $name::$inner(frame) => Ok(frame),
-                            e => Err(e),
-                        }
-                    }
-                }
-            };
-            ($inner:tt) => {
-                // Do nothing as `From` cannot be implemented for unit-like enum variants.
-            };
-        }
-
-        $(
-            impl_from!($variant $($fool)?);
-        )*
-    }
-}
-
-/// Implements the `Meta` trait for standard record types.
-macro_rules! impl_std_meta {
-    // Slightly adjusted from: https://stackoverflow.com/a/61189128.
-    // Doesn't support module paths nor 'where' constraints.
-    (
-        $(
-            ($variant:ident $(< $( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+ >)?, $role:ident, $rkind:ident, $dkind:ident);
-        )+
-    ) => {
-        $(
-            impl $(< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? Meta for $variant $(< $( $lt ),+ >)?
-            {
-                const TYPE: RecordType = RecordType::Standard(Standard::$variant);
-                type SentBy = $role;
-                type RecordKind = $rkind;
-                type DataKind = $dkind;
-            }
-        )+
+impl<T: Meta> IntoRecord for T {
+    fn into_record(self, id: Id) -> Record<T> {
+        Record::from_parts(Header::new(id, T::TYPE), self)
     }
 }
 
 impl_std_meta! {
-    (BeginRequest, Client, Application, Discrete);
-    (AbortRequest, Client, Application, Discrete);
-    (EndRequest, Server, Application, Discrete);
-    (Params, Client, Application, Stream);
-    (Stdin, Client, Application, Stream);
-    (Stdout, Server, Application, Stream);
-    (Stderr, Server, Application, Stream);
-    (Data, Client, Application, Stream);
-    (GetValues, Client, Management, Discrete);
-    (GetValuesResult, Server, Management, Discrete);
-    (UnknownType, Server, Management, Discrete);
+    (BeginRequest, Application, Discrete);
+    (AbortRequest, Application, Discrete);
+    (EndRequest, Application, Discrete);
+    (Params, Application, Stream);
+    (Stdin, Application, Stream);
+    (Stdout, Application, Stream);
+    (Stderr, Application, Stream);
+    (Data, Application, Stream);
+    (GetValues, Management, Discrete);
+    (GetValuesResult, Management, Discrete);
+    (UnknownType, Management, Discrete);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -3,15 +3,15 @@ use std::time::SystemTime;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    build_enum_with_from_impls,
+    await_variant, build_enum_with_from_impls,
     conn::{
         connection::{Connection, ConnectionRecvError, ConnectionSendError},
         endpoint, ParseRequestError,
     },
     meta::DynRequestMetaExt,
     record::{
-        begin_request, params, AbortRequest, BeginRequest, Data, GetValues, Header, IntoRecord,
-        Params, ParamsBuilder, Stdin,
+        begin_request, params, AbortRequest, BeginRequest, Data, EndOfStream, GetValues, Id,
+        IntoRecord, Params, ParamsBuilder, Stdin,
     },
 };
 
@@ -33,20 +33,18 @@ impl Request {
         connection: &mut Connection<T, endpoint::Client>,
     ) -> Result<(), ConnectionSendError> {
         // Available Id should be received from the connection.
-        let header = Header::new(1);
+        let id = 1;
 
         let begin_request =
-            BeginRequest::from_parts((&self.role).into(), self.keep_conn).into_record(header);
+            BeginRequest::from_parts((&self.role).into(), self.keep_conn).into_record(id);
 
         connection.feed_frame(begin_request).await?;
 
-        let result = self.send_inner(header, connection).await;
+        let result = self.send_inner(id, connection).await;
 
         // Attempt to send an abort request on error.
         if result.is_err() {
-            connection
-                .feed_frame(AbortRequest.into_record(header))
-                .await?;
+            connection.feed_frame(AbortRequest.into_record(id)).await?;
         }
 
         // Make sure all the data was written out.
@@ -57,21 +55,20 @@ impl Request {
 
     async fn send_inner<T: AsyncWrite + Unpin>(
         self,
-        header: Header,
+        id: Id,
         connection: &mut Connection<T, endpoint::Client>,
     ) -> Result<(), ConnectionSendError> {
-        connection
-            .feed_stream(self.params.into_record(header))
-            .await?;
+        connection.feed_stream(self.params.into_record(id)).await?;
 
         if let Some(stdin) = self.stdin {
-            connection.feed_stream(stdin.into_record(header)).await?;
+            connection.feed_stream(stdin.into_record(id)).await?;
         } else {
-            connection.feed_empty::<Stdin>(header).await?;
+            let eof = EndOfStream::<Stdin>::new().into_record(id);
+            connection.feed_empty(eof).await?;
         }
 
         if let Role::Filter(data) = self.role {
-            connection.feed_stream(data.into_record(header)).await?;
+            connection.feed_stream(data.into_record(id)).await?;
         }
 
         Ok(())
@@ -84,44 +81,21 @@ impl Request {
         // based on the request id.
 
         // The stream state guarantees that none of the expects and unreachable! can fail.
-        macro_rules! await_variant {
-            (Part::$variant:ident) => {{
-                loop {
-                    if let Some(result) = connection.poll_frame().await {
-                        match result? {
-                            Some(Part::$variant(inner)) => {
-                                break inner;
-                            }
-                            Some(Part::AbortRequest) => {
-                                // TODO: Handle aborted request on the connection.
-                                connection.close_stream();
-
-                                return Ok(None);
-                            }
-                            None => {}
-                            _ => unreachable!(),
-                        }
-                    }
-                }
-            }};
-        }
 
         let begin_request = loop {
             if let Some(result) = connection.poll_frame().await {
-                let part = result?.expect("An unexpected error occured.");
-
-                break BeginRequest::try_from(part).expect("An unexpected error occured.");
+                break BeginRequest::try_from(result?).expect("An unexpected error occured.");
             }
         };
 
-        let params = await_variant!(Part::Params);
-        let stdin = await_variant!(Part::Stdin);
+        let params = await_variant!(connection, Part::Params);
+        let stdin = await_variant!(connection, Part::Stdin);
 
         let role = match begin_request.get_role() {
             begin_request::Role::Responder => Role::Responder,
             begin_request::Role::Authorizer => Role::Authorizer,
             begin_request::Role::Filter => {
-                let data = await_variant!(Part::Data);
+                let data = await_variant!(connection, Part::Data);
 
                 Role::Filter(data)
             }

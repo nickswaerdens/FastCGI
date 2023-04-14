@@ -1,6 +1,7 @@
 pub mod client;
 pub mod codec;
 pub mod conn;
+pub(crate) mod macros;
 pub mod meta;
 pub mod record;
 pub mod request;

@@ -111,7 +111,7 @@ pub struct Custom {
 }
 
 impl Custom {
-    pub fn new(n: u8) -> Self {
+    pub const fn new(n: u8) -> Self {
         assert!(n > 11);
 
         Self { record_type: n }

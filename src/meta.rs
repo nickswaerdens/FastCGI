@@ -1,4 +1,4 @@
-use crate::record::{Custom, RecordType};
+use crate::record::{Custom, DecodeFrame, RecordType};
 
 mod private {
     use crate::record::{
@@ -42,7 +42,6 @@ mod private {
 
 pub trait Meta: private::Sealed {
     const TYPE: RecordType;
-    type SentBy: SentBy;
     type RecordKind: RecordKind;
     type DataKind: DataKind;
 }
@@ -56,18 +55,17 @@ impl<T: MetaExt<SentBy = Server>> DynResponseMetaExt for T {}
 
 /// Specifies whether the record is sent by a `Server` or `Client`.
 /// `Client (BeginRequest...) -> Server (...EndRequest) -> Client`
-pub trait SentBy: private::Sealed {}
+pub trait SentBy: private::Sealed {
+    type Dual: SentBy;
+}
 pub enum Server {}
 pub enum Client {}
-impl SentBy for Server {}
-impl SentBy for Client {}
-
-/// Specifies whether the record is a `Management` or `Application` type.
-pub trait RecordKind: private::Sealed {}
-pub enum Application {}
-pub enum Management {}
-impl RecordKind for Application {}
-impl RecordKind for Management {}
+impl SentBy for Server {
+    type Dual = Client;
+}
+impl SentBy for Client {
+    type Dual = Server;
+}
 
 /// Specifies whether the record is a `Discrete` or `Stream` type.
 pub trait DataKind: private::Sealed {}
@@ -76,19 +74,27 @@ pub enum Stream {}
 impl DataKind for Discrete {}
 impl DataKind for Stream {}
 
+/// Specifies whether the record is a `Management` or `Application` type.
+pub trait RecordKind: private::Sealed {}
+pub enum Application {}
+pub enum Management {}
+impl RecordKind for Application {}
+impl RecordKind for Management {}
+
 /// `MetaExt` records can only be of record kind `Management`.
 /// Record types 0..=11 are reserved, and will result in the management record being ignored by client and server applications.
+///
+/// Currently an experimental trait.
 pub trait MetaExt {
     const TYPE: Custom;
     type SentBy: SentBy;
     type DataKind: DataKind;
-    type Dual; //: MetaExt + DecodeFrame;
+    type Dual: MetaExt<SentBy = <Self::SentBy as SentBy>::Dual> + DecodeFrame;
 }
 
 // Implement `Meta` for extended record types.
 impl<T: MetaExt> Meta for T {
     const TYPE: RecordType = RecordType::Custom(T::TYPE);
-    type SentBy = T::SentBy;
     type RecordKind = Management;
     type DataKind = T::DataKind;
 }
