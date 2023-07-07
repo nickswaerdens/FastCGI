@@ -1,26 +1,4 @@
 #[macro_export]
-macro_rules! await_variant {
-    ($connection:ident, Part::$variant:ident) => {{
-        loop {
-            if let Some(result) = $connection.poll_frame().await {
-                match result? {
-                    Part::$variant(inner) => {
-                        break inner;
-                    }
-                    Part::AbortRequest => {
-                        // TODO: Handle aborted request on the connection.
-                        $connection.close_stream();
-
-                        return Ok(None);
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }};
-}
-
-#[macro_export]
 macro_rules! build_enum_with_from_impls {
     (
         $vis:vis $name:ident {
@@ -69,11 +47,11 @@ macro_rules! impl_std_meta {
     // Doesn't support module paths nor 'where' constraints.
     (
         $(
-            ($variant:ident $(< $( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+ >)?, $rkind:ident, $dkind:ident);
+            ($variant:ident $(< $( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+ >)?, $rkind:ty, $dkind:ty);
         )+
     ) => {
         $(
-            impl $(< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? Meta for $variant $(< $( $lt ),+ >)?
+            impl $(< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? MetaCore for $variant $(< $( $lt ),+ >)?
             {
                 const TYPE: RecordType = RecordType::Standard(Standard::$variant);
                 type RecordKind = $rkind;

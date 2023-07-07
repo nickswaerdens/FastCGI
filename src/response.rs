@@ -1,23 +1,13 @@
-use tokio::io::{AsyncRead, AsyncWrite};
-
-use crate::{
-    build_enum_with_from_impls,
-    conn::{
-        connection::{Connection, ConnectionRecvError, ConnectionSendError},
-        endpoint, ParseResponseError,
-    },
+use crate::protocol::{
     meta::DynResponseMetaExt,
-    record::{
-        EndOfStream, EndRequest, GetValuesResult, IntoRecord, ProtocolStatus, Stderr, Stdout,
-        UnknownType,
-    },
+    record::{GetValuesResult, Stderr, Stdout, UnknownType},
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Response {
-    stdout: Option<Stdout>,
-    stderr: Option<Stderr>,
-    app_status: u32,
+    pub(crate) stdout: Option<Stdout>,
+    pub(crate) stderr: Option<Stderr>,
+    pub(crate) app_status: u32,
 }
 
 impl Response {
@@ -25,6 +15,7 @@ impl Response {
         ResponseBuilder::new()
     }
 
+    /*
     pub(crate) async fn send<T: AsyncWrite + Unpin>(
         self,
         connection: &mut Connection<T, endpoint::Server>,
@@ -55,7 +46,7 @@ impl Response {
         connection.feed_frame(end_request).await?;
 
         // Make sure all the data was written out.
-        connection.flush().await?;
+        // connection.flush().await?;
         connection.close_stream();
 
         Ok(())
@@ -91,13 +82,14 @@ impl Response {
 
         Ok(response)
     }
+    */
 
-    pub fn get_stdout(&self) -> &Option<Stdout> {
-        &self.stdout
+    pub fn get_stdout(&self) -> Option<&Stdout> {
+        self.stdout.as_ref()
     }
 
-    pub fn get_stderr(&self) -> &Option<Stderr> {
-        &self.stderr
+    pub fn get_stderr(&self) -> Option<&Stderr> {
+        self.stderr.as_ref()
     }
 
     pub fn get_app_status(&self) -> u32 {
@@ -177,14 +169,6 @@ impl Default for ResponseBuilder<Init> {
             stderr: None,
             state: Init,
         }
-    }
-}
-
-build_enum_with_from_impls! {
-    pub(crate) Part {
-        Stdout(Option<Stdout>),
-        Stderr(Option<Stderr>),
-        EndRequest(EndRequest),
     }
 }
 

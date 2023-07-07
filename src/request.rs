@@ -1,112 +1,22 @@
-use std::time::SystemTime;
-
-use tokio::io::{AsyncRead, AsyncWrite};
-
-use crate::{
-    await_variant, build_enum_with_from_impls,
-    conn::{
-        connection::{Connection, ConnectionRecvError, ConnectionSendError},
-        endpoint, ParseRequestError,
-    },
+use crate::protocol::{
     meta::DynRequestMetaExt,
     record::{
-        begin_request, params, AbortRequest, BeginRequest, Data, EndOfStream, GetValues, Id,
-        IntoRecord, Params, ParamsBuilder, Stdin,
+        begin_request::Role, params, Data, GetValues, Params, ParamsBuilder, Stdin, StreamChunker,
     },
 };
+use std::time::SystemTime;
 
 #[derive(Debug)]
 pub struct Request {
-    keep_conn: bool,
-    params: Params,
-    stdin: Option<Stdin>,
-    role: Role,
+    pub(crate) keep_conn: bool,
+    pub(crate) params: Params,
+    pub(crate) stdin: Option<Stdin>,
+    pub(crate) role: RoleTyped<Data>,
 }
 
 impl Request {
     pub fn builder() -> RequestBuilder<Init> {
         RequestBuilder::new()
-    }
-
-    pub(crate) async fn send<T: AsyncWrite + Unpin>(
-        self,
-        connection: &mut Connection<T, endpoint::Client>,
-    ) -> Result<(), ConnectionSendError> {
-        // Available Id should be received from the connection.
-        let id = 1;
-
-        let begin_request =
-            BeginRequest::from_parts((&self.role).into(), self.keep_conn).into_record(id);
-
-        connection.feed_frame(begin_request).await?;
-
-        let result = self.send_inner(id, connection).await;
-
-        // Attempt to send an abort request on error.
-        if result.is_err() {
-            connection.feed_frame(AbortRequest.into_record(id)).await?;
-        }
-
-        // Make sure all the data was written out.
-        connection.flush().await?;
-
-        result
-    }
-
-    async fn send_inner<T: AsyncWrite + Unpin>(
-        self,
-        id: Id,
-        connection: &mut Connection<T, endpoint::Client>,
-    ) -> Result<(), ConnectionSendError> {
-        connection.feed_stream(self.params.into_record(id)).await?;
-
-        if let Some(stdin) = self.stdin {
-            connection.feed_stream(stdin.into_record(id)).await?;
-        } else {
-            let eof = EndOfStream::<Stdin>::new().into_record(id);
-            connection.feed_empty(eof).await?;
-        }
-
-        if let Role::Filter(data) = self.role {
-            connection.feed_stream(data.into_record(id)).await?;
-        }
-
-        Ok(())
-    }
-
-    pub(crate) async fn recv<T: AsyncRead + Unpin>(
-        connection: &mut Connection<T, endpoint::Server>,
-    ) -> Result<Option<Self>, ConnectionRecvError<ParseRequestError>> {
-        // A channel should be used here instead which receives request parts
-        // based on the request id.
-
-        // The stream state guarantees that none of the expects and unreachable! can fail.
-
-        let begin_request = loop {
-            if let Some(result) = connection.poll_frame().await {
-                break BeginRequest::try_from(result?).expect("An unexpected error occured.");
-            }
-        };
-
-        let params = await_variant!(connection, Part::Params);
-        let stdin = await_variant!(connection, Part::Stdin);
-
-        let role = match begin_request.get_role() {
-            begin_request::Role::Responder => Role::Responder,
-            begin_request::Role::Authorizer => Role::Authorizer,
-            begin_request::Role::Filter => {
-                let data = await_variant!(connection, Part::Data);
-
-                Role::Filter(data)
-            }
-        };
-
-        Ok(Some(Request {
-            keep_conn: begin_request.get_keep_conn(),
-            params,
-            stdin,
-            role,
-        }))
     }
 
     pub fn get_keep_conn(&self) -> bool {
@@ -117,41 +27,24 @@ impl Request {
         &self.params
     }
 
-    pub fn get_stdin(&self) -> &Option<Stdin> {
-        &self.stdin
+    pub fn get_stdin(&self) -> Option<&Stdin> {
+        self.stdin.as_ref()
     }
 
-    pub fn get_role(&self) -> &Role {
+    pub fn get_role(&self) -> &RoleTyped<Data> {
         &self.role
     }
 
     pub fn get_data(&self) -> Option<&Data> {
-        if let Role::Filter(ref data) = self.role {
+        if let RoleTyped::Filter(ref data) = self.role {
             Some(data)
         } else {
             None
         }
     }
 
-    pub(crate) fn into_parts(self) -> (bool, Params, Option<Stdin>, Role) {
+    pub(crate) fn into_parts(self) -> (bool, Params, Option<Stdin>, RoleTyped<Data>) {
         (self.keep_conn, self.params, self.stdin, self.role)
-    }
-}
-
-#[derive(Debug)]
-pub enum Role {
-    Responder,
-    Authorizer,
-    Filter(Data),
-}
-
-impl From<&Role> for begin_request::Role {
-    fn from(role: &Role) -> Self {
-        match role {
-            Role::Responder => begin_request::Role::Responder,
-            Role::Authorizer => begin_request::Role::Authorizer,
-            Role::Filter(_) => begin_request::Role::Filter,
-        }
     }
 }
 
@@ -160,16 +53,55 @@ mod sealed {
 
     pub trait Sealed {}
 
+    // FilterType
+    impl Sealed for Data {}
+    impl Sealed for StreamChunker<Data> {}
+    impl Sealed for Option<StreamChunker<Data>> {}
+
+    // RoleState
     impl Sealed for Responder {}
     impl Sealed for Authorizer {}
     impl Sealed for Filter {}
 
     impl Sealed for Init {}
-    impl<R: RoleTyped> Sealed for ParamsSet<R> {}
+    impl<R: RoleState> Sealed for ParamsSet<R> {}
     impl Sealed for FilterSelected {}
 }
 
-pub trait RoleTyped: sealed::Sealed {}
+pub trait FilterType: sealed::Sealed {}
+
+impl FilterType for Data {}
+impl FilterType for StreamChunker<Data> {}
+impl FilterType for Option<StreamChunker<Data>> {}
+
+#[derive(Debug)]
+pub enum RoleTyped<T: FilterType> {
+    Responder,
+    Authorizer,
+    Filter(T),
+}
+
+impl RoleTyped<Data> {
+    pub(crate) fn map<T: FilterType>(self, f: fn(Data) -> T) -> RoleTyped<T> {
+        match self {
+            Self::Responder => RoleTyped::Responder,
+            Self::Authorizer => RoleTyped::Authorizer,
+            Self::Filter(data) => RoleTyped::Filter(f(data)),
+        }
+    }
+}
+
+impl<T: FilterType> From<&RoleTyped<T>> for Role {
+    fn from(role: &RoleTyped<T>) -> Self {
+        match role {
+            RoleTyped::Responder => Role::Responder,
+            RoleTyped::Authorizer => Role::Authorizer,
+            RoleTyped::Filter(_) => Role::Filter,
+        }
+    }
+}
+
+pub trait RoleState: sealed::Sealed {}
 
 pub struct Responder;
 pub struct Authorizer;
@@ -178,15 +110,15 @@ pub struct Filter {
     data: Data,
 }
 
-impl RoleTyped for Responder {}
-impl RoleTyped for Authorizer {}
-impl RoleTyped for Filter {}
+impl RoleState for Responder {}
+impl RoleState for Authorizer {}
+impl RoleState for Filter {}
 
 pub trait BuilderState: sealed::Sealed {}
 
 pub struct Init;
 
-pub struct ParamsSet<R: RoleTyped> {
+pub struct ParamsSet<R: RoleState> {
     params: ParamsBuilder<params::Build, R>,
 }
 
@@ -196,19 +128,13 @@ pub struct FilterSelected {
 }
 
 impl BuilderState for Init {}
-impl<R: RoleTyped> BuilderState for ParamsSet<R> {}
+impl<R: RoleState> BuilderState for ParamsSet<R> {}
 impl BuilderState for FilterSelected {}
 
 pub struct RequestBuilder<S: BuilderState> {
     keep_conn: bool,
     stdin: Option<Stdin>,
     state: S,
-}
-
-impl RequestBuilder<Init> {
-    pub fn new() -> Self {
-        Self::default()
-    }
 }
 
 impl<S: BuilderState> RequestBuilder<S> {
@@ -224,7 +150,11 @@ impl<S: BuilderState> RequestBuilder<S> {
 }
 
 impl RequestBuilder<Init> {
-    pub fn params<R: RoleTyped>(
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn params<R: RoleState>(
         self,
         params: ParamsBuilder<params::Build, R>,
     ) -> RequestBuilder<ParamsSet<R>> {
@@ -237,11 +167,14 @@ impl RequestBuilder<Init> {
 }
 
 impl RequestBuilder<ParamsSet<Filter>> {
+    /// Automatically adds the 'DATA_LAST_MOD' and 'DATA_LENGTH' params.
     pub fn data(
         mut self,
-        data: Data,
+        data: impl Into<Data>,
         data_last_mod: impl Into<SystemTime>,
     ) -> RequestBuilder<FilterSelected> {
+        let data = data.into();
+
         self.state.params = self.state.params.data_last_mod(data_last_mod.into());
         self.state.params = self.state.params.data_length(data.length());
 
@@ -254,6 +187,11 @@ impl RequestBuilder<ParamsSet<Filter>> {
             },
         }
     }
+
+    /// Automatically adds the 'DATA_LAST_MOD' and 'DATA_LENGTH' params.
+    pub fn data_now(self, data: impl Into<Data>) -> RequestBuilder<FilterSelected> {
+        Self::data(self, data, SystemTime::now())
+    }
 }
 
 impl RequestBuilder<ParamsSet<Responder>> {
@@ -261,7 +199,7 @@ impl RequestBuilder<ParamsSet<Responder>> {
         Request {
             params: self.state.params.build(),
             stdin: self.stdin,
-            role: Role::Responder,
+            role: RoleTyped::Responder,
             keep_conn: self.keep_conn,
         }
     }
@@ -272,7 +210,7 @@ impl RequestBuilder<ParamsSet<Authorizer>> {
         Request {
             params: self.state.params.build(),
             stdin: self.stdin,
-            role: Role::Authorizer,
+            role: RoleTyped::Authorizer,
             keep_conn: self.keep_conn,
         }
     }
@@ -283,7 +221,7 @@ impl RequestBuilder<FilterSelected> {
         Request {
             params: self.state.params.build(),
             stdin: self.stdin,
-            role: Role::Filter(self.state.data),
+            role: RoleTyped::Filter(self.state.data),
             keep_conn: self.keep_conn,
         }
     }
@@ -296,16 +234,6 @@ impl Default for RequestBuilder<Init> {
             stdin: None,
             state: Init,
         }
-    }
-}
-
-build_enum_with_from_impls! {
-    pub(crate) Part {
-        BeginRequest(BeginRequest),
-        AbortRequest,
-        Params(Params),
-        Stdin(Option<Stdin>),
-        Data(Data),
     }
 }
 

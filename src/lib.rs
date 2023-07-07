@@ -1,54 +1,15 @@
-pub mod client;
-pub mod codec;
-pub mod conn;
-pub(crate) mod macros;
-pub mod meta;
-pub mod record;
+use std::num::NonZeroU16;
+
+mod macros;
+pub mod multiplex;
+pub mod protocol;
 pub mod request;
 pub mod response;
-pub mod server;
-
-use conn::{
-    connection::{ConnectionRecvError, ConnectionSendError},
-    ParseRequestError, ParseResponseError,
-};
 
 pub const FCGI_VERSION_1: u8 = 1;
 
-pub const MANAGEMENT_ID: u16 = 0;
+pub const HEADER_SIZE: u8 = 8;
+pub const DEFAULT_MAX_PAYLOAD_SIZE: u16 = u16::MAX;
 
-#[derive(Debug)]
-pub enum FastcgiClientError {
-    Send(ConnectionSendError),
-    Recv(ConnectionRecvError<ParseResponseError>),
-}
-
-#[derive(Debug)]
-pub enum FastcgiServerError {
-    Send(ConnectionSendError),
-    Recv(ConnectionRecvError<ParseRequestError>),
-}
-
-impl From<ConnectionSendError> for FastcgiClientError {
-    fn from(value: ConnectionSendError) -> Self {
-        FastcgiClientError::Send(value)
-    }
-}
-
-impl From<ConnectionRecvError<ParseResponseError>> for FastcgiClientError {
-    fn from(value: ConnectionRecvError<ParseResponseError>) -> Self {
-        FastcgiClientError::Recv(value)
-    }
-}
-
-impl From<ConnectionSendError> for FastcgiServerError {
-    fn from(value: ConnectionSendError) -> Self {
-        FastcgiServerError::Send(value)
-    }
-}
-
-impl From<ConnectionRecvError<ParseRequestError>> for FastcgiServerError {
-    fn from(value: ConnectionRecvError<ParseRequestError>) -> Self {
-        FastcgiServerError::Recv(value)
-    }
-}
+pub(crate) const MANAGEMENT_ID: u16 = 0;
+pub(crate) type ApplicationId = NonZeroU16;
