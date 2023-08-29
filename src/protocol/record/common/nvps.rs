@@ -60,9 +60,9 @@ impl NameValuePairs {
         Some(Ok(()))
     }
 
-    pub fn decode(
+    pub fn decode<F: Fn(&NameValuePair) -> bool>(
         mut src: BytesMut,
-        validate: fn(&NameValuePair) -> bool,
+        validate: F,
     ) -> Result<NameValuePairs, DecodeError> {
         let mut nvps = NameValuePairs::new();
 

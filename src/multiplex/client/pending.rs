@@ -1,11 +1,10 @@
-use super::{config::PendingConfig, PriorityCommand};
+use super::{config::PendingConfig, Command};
 use crate::{
     protocol::{
-        meta::MetaCore,
         parser::response::{ParseResponseError, Parser, Part, Transition},
         record::{
-            ApplicationRecord, BeginRequest, Data, EncodeRecordError, IntoStreamChunker, Params,
-            ProtocolStatusError, Stderr, Stdin, Stdout, StreamChunker,
+            ApplicationRecord, ApplicationRecordType, BeginRequest, Data, EncodeRecordError,
+            IntoStreamChunker, Params, ProtocolStatusError, Stderr, Stdin, Stdout, StreamChunker,
         },
         transport::Frame,
     },
@@ -28,7 +27,7 @@ use tokio_util::sync::{PollSendError, PollSender};
 #[derive(Debug)]
 pub(crate) struct RegisterId<'a> {
     #[pin]
-    tx_priority: &'a mut PollSender<PriorityCommand>,
+    tx_command: &'a mut PollSender<Command>,
     tx: mpsc::Sender<Frame>,
 
     #[pin]
@@ -53,7 +52,7 @@ pub struct Pending {
     #[pin]
     tx: PollSender<ApplicationRecord>,
     #[pin]
-    tx_priority: PollSender<PriorityCommand>,
+    tx_command: PollSender<Command>,
     encode_buf: BytesMut,
     request: PartialRequest,
 
@@ -73,17 +72,14 @@ struct Cleanup {
     id: ApplicationId,
 
     #[pin]
-    tx_priority: PollSender<PriorityCommand>,
+    tx_command: PollSender<Command>,
     abort: bool,
 }
 
 impl<'a> RegisterId<'a> {
-    pub(crate) fn new(
-        tx_priority: &'a mut PollSender<PriorityCommand>,
-        tx: mpsc::Sender<Frame>,
-    ) -> Self {
+    pub(crate) fn new(tx_command: &'a mut PollSender<Command>, tx: mpsc::Sender<Frame>) -> Self {
         Self {
-            tx_priority,
+            tx_command,
             tx,
             id_receiver: None,
         }
@@ -95,7 +91,7 @@ impl Pending {
         id: ApplicationId,
         req: Request,
         tx: PollSender<ApplicationRecord>,
-        tx_priority: PollSender<PriorityCommand>,
+        tx_command: PollSender<Command>,
         rx: mpsc::Receiver<Frame>,
         config: &PendingConfig,
     ) -> Self {
@@ -106,7 +102,7 @@ impl Pending {
             state: State::default(),
 
             tx,
-            tx_priority,
+            tx_command,
             encode_buf: BytesMut::new(),
             request: PartialRequest {
                 keep_conn: Some(keep_conn),
@@ -116,12 +112,12 @@ impl Pending {
             },
 
             rx,
-            parser: Parser::default(),
+            parser: Parser::new(config.max_stream_payload_size),
             response: PartialResponse::default(),
 
             expires_at: Instant::now()
                 .checked_add(config.timeout)
-                .expect("config.timeout too long."),
+                .expect("config.timeout exceeded it's maximum value."),
             yield_at: config.yield_at,
         }
     }
@@ -155,7 +151,11 @@ impl Pending {
                     .encode(&mut buf.limit(u16::MAX as usize))?;
 
                 tx.as_mut()
-                    .send_item(ApplicationRecord::new(*id, BeginRequest::TYPE, buf.split()))
+                    .send_item(ApplicationRecord::new(
+                        *id,
+                        ApplicationRecordType::BeginRequest,
+                        buf.split(),
+                    ))
                     // This error doesn't happen if we get through poll_reserve without error.
                     .unwrap();
 
@@ -176,9 +176,11 @@ impl Pending {
                                 .encode(&mut buf.limit(u16::MAX as usize))
                                 .transpose()?
                             {
-                                Some(_) => {
-                                    ApplicationRecord::new(*id, $record_type::TYPE, buf.split())
-                                }
+                                Some(_) => ApplicationRecord::new(
+                                    *id,
+                                    ApplicationRecordType::$record_type,
+                                    buf.split(),
+                                ),
                                 None => {
                                     $chunker.take();
 
@@ -271,17 +273,17 @@ impl<'a> Future for RegisterId<'a> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let mut tx_priority = this.tx_priority;
+        let mut tx_command = this.tx_command;
         let mut id_receiver = this.id_receiver;
 
         if id_receiver.is_none() {
-            ready!(tx_priority.poll_reserve(cx)?);
+            ready!(tx_command.poll_reserve(cx)?);
 
             // Attempt to register a new pending request.
             let (tx_id, rx_id) = oneshot::channel();
-            tx_priority
+            tx_command
                 .as_mut()
-                .send_item(PriorityCommand::Register {
+                .send_item(Command::Register {
                     tx_id,
                     tx: this.tx.clone(),
                 })
@@ -291,7 +293,7 @@ impl<'a> Future for RegisterId<'a> {
             id_receiver.replace(rx_id);
         };
 
-        let _ = tx_priority.as_mut().poll_flush(cx)?;
+        let _ = tx_command.as_mut().poll_flush(cx)?;
 
         let recv = id_receiver
             .as_mut()
@@ -333,7 +335,7 @@ impl Future for Pending {
         // task attempts to abort this request if it failed.
         tokio::spawn(Cleanup {
             id: self.id,
-            tx_priority: self.tx_priority.clone(),
+            tx_command: self.tx_command.clone(),
             abort,
         });
 
@@ -342,27 +344,28 @@ impl Future for Pending {
 }
 
 impl Future for Cleanup {
-    type Output = Result<(), PollSendError<PriorityCommand>>;
+    type Output = Result<(), PollSendError<Command>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        let mut tx = this.tx_priority;
+        let mut tx_command = this.tx_command;
 
         if *this.abort {
             // An error here means we won't free the id.
             // This doesn't matter as the error is very unlikely
             // to be recoverable, and the MUX will shutdown.
-            ready!(tx.as_mut().poll_reserve(cx))?;
+            ready!(tx_command.as_mut().poll_reserve(cx))?;
 
-            tx.as_mut()
-                .send_item(PriorityCommand::Abort { id: *this.id })
+            tx_command
+                .as_mut()
+                .send_item(Command::Abort { id: *this.id })
                 .unwrap();
 
             *this.abort = false;
         }
 
         // Flush & close this sender.
-        tx.poll_close(cx)
+        tx_command.poll_close(cx)
     }
 }
 
@@ -437,8 +440,8 @@ impl From<ProtocolStatusError> for PendingError {
     }
 }
 
-impl From<PollSendError<PriorityCommand>> for IdAssignError {
-    fn from(_: PollSendError<PriorityCommand>) -> Self {
+impl From<PollSendError<Command>> for IdAssignError {
+    fn from(_: PollSendError<Command>) -> Self {
         IdAssignError::SenderError
     }
 }

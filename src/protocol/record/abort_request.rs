@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+
 use super::{Decode, DecodeError, EncodeBuffer, EncodeRecord, EncodeRecordError};
 use bytes::BytesMut;
 
@@ -11,7 +13,9 @@ impl EncodeRecord for AbortRequest {
 }
 
 impl Decode for AbortRequest {
-    fn decode(_: BytesMut) -> Result<AbortRequest, DecodeError> {
+    type Error = Infallible;
+
+    fn decode(_: BytesMut) -> Result<AbortRequest, Self::Error> {
         Ok(AbortRequest)
     }
 }

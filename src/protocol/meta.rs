@@ -1,10 +1,9 @@
-use super::record::{Custom, RecordType};
+use super::record::{ManagementRecordType, RecordType};
 
 mod private {
     use super::*;
     use crate::protocol::record::{
-        AbortRequest, BeginRequest, Data, EndRequest, GetValues, GetValuesResult, Params, Stderr,
-        Stdin, Stdout, UnknownType,
+        AbortRequest, BeginRequest, Data, EndRequest, Params, Stderr, Stdin, Stdout,
     };
 
     pub trait Sealed {}
@@ -18,12 +17,9 @@ mod private {
     impl Sealed for Data {}
     impl Sealed for Stdout {}
     impl Sealed for Stderr {}
-    impl Sealed for GetValues {}
-    impl Sealed for GetValuesResult {}
-    impl Sealed for UnknownType {}
 
-    // Custom user records.
-    impl<T: MetaCoreExt> Sealed for T {}
+    // Management records.
+    impl<T: ManagementRecord> Sealed for T {}
 
     // Meta types.
     impl Sealed for Application {}
@@ -43,6 +39,31 @@ pub trait MetaCore: private::Sealed {
     type DataKind: DataKind;
 }
 
+/// Record types 0..=11 are reserved.
+///
+/// Currently an experimental trait.
+pub trait ManagementRecord {
+    const TYPE: ManagementRecordType;
+    type DataKind: DataKind;
+    type Endpoint: Endpoint;
+
+    // The associated return type of a management record.
+    type Dual;
+}
+
+pub trait DynManagementRecord {
+    fn record_type() -> ManagementRecordType;
+}
+
+impl<T> DynManagementRecord for T
+where
+    T: ManagementRecord,
+{
+    fn record_type() -> ManagementRecordType {
+        T::TYPE
+    }
+}
+
 /// Object-safe version of `MetaCore`.
 pub trait Meta: private::Sealed {
     fn record_type(&self) -> RecordType;
@@ -54,26 +75,14 @@ impl<T: MetaCore> Meta for T {
     }
 }
 
-/// `MetaCoreExt` records can only be of record kind `Management`.
-/// Record types 0..=11 are reserved.
-///
-/// Currently an experimental trait.
-pub trait MetaCoreExt {
-    const TYPE: Custom;
-    type DataKind: DataKind;
-    type SentBy: SentBy;
-
-    // The associated return type of a management record.
-    type Dual;
-}
-
 // Implement `MetaCore` for extended record types.
-impl<T: MetaCoreExt> MetaCore for T {
-    const TYPE: RecordType = RecordType::Custom(T::TYPE);
+impl<T: ManagementRecord> MetaCore for T {
+    const TYPE: RecordType = RecordType::Management(T::TYPE);
     type RecordKind = Management;
     type DataKind = T::DataKind;
 }
 
+/*
 /// Object safe MetaCoreExt trait for requests.
 pub trait DynRequestMetaExt: private::Sealed {}
 impl<T: MetaCoreExt<SentBy = Client>> DynRequestMetaExt for T {}
@@ -81,6 +90,7 @@ impl<T: MetaCoreExt<SentBy = Client>> DynRequestMetaExt for T {}
 /// Object safe MetaCoreExt trait for responses.
 pub trait DynResponseMetaExt: private::Sealed {}
 impl<T: MetaCoreExt<SentBy = Server>> DynResponseMetaExt for T {}
+*/
 
 /// Specifies whether the record is a `Management` or `Application` type.
 pub trait RecordKind: private::Sealed {}
@@ -98,17 +108,17 @@ impl DataKind for Stream {}
 
 /// Specifies whether the record is sent by a `Server` or `Client`.
 /// `Client (BeginRequest...) -> Server (...EndRequest) -> Client`
-pub trait SentBy: private::Sealed {
-    type Dual: SentBy;
+pub trait Endpoint: private::Sealed {
+    type Dual: Endpoint;
 }
 
-pub enum Server {}
 pub enum Client {}
+pub enum Server {}
 
-impl SentBy for Server {
-    type Dual = Client;
+impl Endpoint for Client {
+    type Dual = Server;
 }
 
-impl SentBy for Client {
-    type Dual = Server;
+impl Endpoint for Server {
+    type Dual = Client;
 }

@@ -1,7 +1,4 @@
-use crate::protocol::{
-    meta::DynResponseMetaExt,
-    record::{GetValuesResult, Stderr, Stdout, UnknownType},
-};
+use crate::protocol::record::{Stderr, Stdout};
 
 #[derive(Debug)]
 pub struct Response {
@@ -169,17 +166,5 @@ impl Default for ResponseBuilder<Init> {
             stderr: None,
             state: Init,
         }
-    }
-}
-
-enum ManagementResponse {
-    GetValuesResult(GetValuesResult),
-    UnknownType(UnknownType),
-    Custom(Box<dyn DynResponseMetaExt>),
-}
-
-impl From<Box<dyn DynResponseMetaExt>> for ManagementResponse {
-    fn from(value: Box<dyn DynResponseMetaExt>) -> Self {
-        ManagementResponse::Custom(value)
     }
 }

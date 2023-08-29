@@ -3,8 +3,8 @@ use crate::{
     build_enum_with_from_impls,
     protocol::{
         record::{
-            begin_request::Role, BeginRequest, Data, Decode, DecodeError, Params, RecordType,
-            Standard, Stdin,
+            begin_request::Role, ApplicationRecordType, BeginRequest, Data, Decode, DecodeError,
+            Params, RecordType, Stdin,
         },
         transport::Frame,
     },
@@ -22,8 +22,8 @@ fn validate_record_type(lh: RecordType, rh: impl PartialEq<RecordType>) -> Parse
 enum State {
     #[default]
     BeginRequest,
-    Params,
-    Stdin,
+    Params(Role),
+    Stdin(Role),
     Data,
     Finished,
     Aborted,
@@ -44,7 +44,7 @@ impl Transition {
 
         if !payload.is_empty() {
             Transition::Parse(frame)
-        } else if record_type == Standard::AbortRequest {
+        } else if record_type == ApplicationRecordType::AbortRequest {
             Transition::Abort
         } else {
             Transition::EndOfStream(record_type)
@@ -52,19 +52,17 @@ impl Transition {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Parser {
     inner: State,
-    role: Option<Role>,
     defrag: Defrag,
 }
 
 impl Parser {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(max_total_payload: usize) -> Self {
         Parser {
             inner: State::BeginRequest,
-            role: None,
-            defrag: Defrag::new(),
+            defrag: Defrag::new(max_total_payload),
         }
     }
 
@@ -72,67 +70,60 @@ impl Parser {
     pub(crate) fn parse_frame(&mut self, transition: Transition) -> ParseResult<Option<Part>> {
         let part = match (self.inner, transition) {
             (State::BeginRequest, Transition::Parse(frame)) => {
-                let (_id, record_type, payload) = frame.into_parts();
+                let (_, record_type, payload) = frame.into_parts();
 
-                validate_record_type(record_type, Standard::BeginRequest)?;
+                validate_record_type(record_type, ApplicationRecordType::BeginRequest)?;
 
                 let begin_request = BeginRequest::decode(payload)?;
 
-                self.role = Some(begin_request.get_role());
-                self.inner = State::Params;
+                self.inner = State::Params(begin_request.get_role());
 
                 Some(Part::from(begin_request))
             }
 
-            (State::Params, Transition::Parse(frame)) => {
+            (State::Params(_), Transition::Parse(frame)) => {
                 let (_, record_type, payload) = frame.into_parts();
 
-                validate_record_type(record_type, Standard::Params)?;
+                validate_record_type(record_type, ApplicationRecordType::Params)?;
 
                 self.defrag.insert_payload(payload)?;
 
                 None
             }
-            (State::Params, Transition::EndOfStream(record_type)) => {
-                validate_record_type(record_type, Standard::Params)?;
+            (State::Params(role), Transition::EndOfStream(record_type)) => {
+                validate_record_type(record_type, ApplicationRecordType::Params)?;
 
-                let params = self
-                    .defrag
-                    .handle_end_of_stream()
-                    .map(Params::decode)
-                    .transpose()?;
+                let payload = self.defrag.handle_end_of_stream();
 
-                self.inner = State::Stdin;
-
-                if params.is_none() {
+                if payload.is_empty() {
                     return Err(ParseRequestError::ParamsMustBeLargerThanZero);
                 }
 
-                params.map(Part::from)
+                let params = Params::decode(payload)?;
+
+                self.inner = State::Stdin(role);
+
+                Some(Part::from(params))
             }
 
-            (State::Stdin, Transition::Parse(frame)) => {
+            (State::Stdin(_), Transition::Parse(frame)) => {
                 let (_, record_type, payload) = frame.into_parts();
 
-                validate_record_type(record_type, Standard::Stdin)?;
+                validate_record_type(record_type, ApplicationRecordType::Stdin)?;
 
                 self.defrag.insert_payload(payload)?;
 
                 None
             }
-            (State::Stdin, Transition::EndOfStream(record_type)) => {
-                validate_record_type(record_type, Standard::Stdin)?;
+            (State::Stdin(role), Transition::EndOfStream(record_type)) => {
+                validate_record_type(record_type, ApplicationRecordType::Stdin)?;
 
-                let stdin = self
-                    .defrag
-                    .handle_end_of_stream()
-                    .map(Stdin::decode)
+                let payload = self.defrag.handle_end_of_stream();
+                let stdin = (!payload.is_empty())
+                    .then_some(Stdin::decode(payload))
                     .transpose()?;
 
-                self.inner = match self
-                    .role
-                    .expect("Invalid state reached while parsing the request.")
-                {
+                self.inner = match role {
                     Role::Filter => State::Data,
                     _ => State::Finished,
                 };
@@ -143,28 +134,26 @@ impl Parser {
             (State::Data, Transition::Parse(frame)) => {
                 let (_, record_type, payload) = frame.into_parts();
 
-                validate_record_type(record_type, Standard::Data)?;
+                validate_record_type(record_type, ApplicationRecordType::Data)?;
 
                 self.defrag.insert_payload(payload)?;
 
                 None
             }
             (State::Data, Transition::EndOfStream(record_type)) => {
-                validate_record_type(record_type, Standard::Data)?;
+                validate_record_type(record_type, ApplicationRecordType::Data)?;
 
-                let data = self
-                    .defrag
-                    .handle_end_of_stream()
-                    .map(Data::decode)
-                    .transpose()?;
+                let payload = self.defrag.handle_end_of_stream();
 
-                self.inner = State::Finished;
-
-                if data.is_none() {
+                if payload.is_empty() {
                     return Err(ParseRequestError::DataIsRequiredForFilterApplications);
                 }
 
-                data.map(Part::from)
+                let data = Data::decode(payload)?;
+
+                self.inner = State::Finished;
+
+                Some(Part::from(data))
             }
 
             // Abort

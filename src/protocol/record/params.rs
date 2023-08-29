@@ -33,7 +33,9 @@ impl EncodeChunk for Params {
 }
 
 impl Decode for Params {
-    fn decode(src: BytesMut) -> Result<Self, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<Self, Self::Error> {
         Ok(Params {
             inner: NameValuePairs::decode(src, Self::validate)?,
         })

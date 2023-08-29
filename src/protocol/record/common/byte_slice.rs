@@ -50,7 +50,10 @@ impl ByteSlice {
         Some(Ok(()))
     }
 
-    pub fn decode(src: BytesMut, validate: fn(&[u8]) -> bool) -> Result<ByteSlice, DecodeError> {
+    pub fn decode<F: Fn(&[u8]) -> bool>(
+        src: BytesMut,
+        validate: F,
+    ) -> Result<ByteSlice, DecodeError> {
         let bytes = src.freeze();
 
         if !validate(&bytes) {

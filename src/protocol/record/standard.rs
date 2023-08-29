@@ -13,7 +13,9 @@ impl EncodeChunk for Stdin {
 }
 
 impl Decode for Stdin {
-    fn decode(src: BytesMut) -> Result<Self, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<Self, Self::Error> {
         Ok(Stdin(ByteSlice::decode(
             src,
             ByteSlice::validate_non_empty,
@@ -45,7 +47,9 @@ impl EncodeChunk for Stdout {
 }
 
 impl Decode for Stdout {
-    fn decode(src: BytesMut) -> Result<Self, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<Self, Self::Error> {
         Ok(Stdout(ByteSlice::decode(
             src,
             ByteSlice::validate_non_empty,
@@ -77,7 +81,9 @@ impl EncodeChunk for Stderr {
 }
 
 impl Decode for Stderr {
-    fn decode(src: BytesMut) -> Result<Self, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<Self, Self::Error> {
         Ok(Stderr(ByteSlice::decode(
             src,
             ByteSlice::validate_non_empty,

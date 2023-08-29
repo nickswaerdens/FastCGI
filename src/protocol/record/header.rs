@@ -13,6 +13,12 @@ pub(crate) struct Header {
     pub(crate) padding: Option<Padding>,
 }
 
+pub(crate) struct HeaderDecoded {
+    pub(crate) header: Header,
+    pub(crate) content_length: u16,
+    pub(crate) padding_length: u8,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Padding {
     #[default]
@@ -63,7 +69,7 @@ impl Header {
     }
 
     /// Returns a triple containing the header, content length, and padding length.
-    pub fn decode(src: &mut BytesMut) -> Result<Option<(Header, u16, u8)>, DecodeCodecError> {
+    pub fn decode(src: &mut BytesMut) -> Result<Option<HeaderDecoded>, DecodeCodecError> {
         if src.len() < HEADER_SIZE as usize {
             return Ok(None);
         }
@@ -88,7 +94,11 @@ impl Header {
         // Discard header from src.
         src.advance(HEADER_SIZE as usize);
 
-        Ok(Some((header, content_length, padding_length)))
+        Ok(Some(HeaderDecoded {
+            header,
+            content_length,
+            padding_length,
+        }))
     }
 }
 

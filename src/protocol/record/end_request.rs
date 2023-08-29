@@ -101,7 +101,9 @@ impl EncodeRecord for EndRequest {
 }
 
 impl Decode for EndRequest {
-    fn decode(src: BytesMut) -> Result<EndRequest, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<EndRequest, Self::Error> {
         Self::decode(src)
     }
 }

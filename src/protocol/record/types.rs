@@ -1,4 +1,4 @@
-macro_rules! standard_record_types {
+macro_rules! application_record_types {
     (
         $(
             ($variant:ident, $num:expr);
@@ -6,32 +6,34 @@ macro_rules! standard_record_types {
     ) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         #[repr(u8)]
-        pub enum Standard {
+        pub enum ApplicationRecordType {
             $(
                 $variant = $num,
             )+
         }
 
-        impl From<u8> for Standard {
+
+        impl From<u8> for ApplicationRecordType {
             fn from(value: u8) -> Self {
                 match value {
                     $(
                         $num => Self::$variant,
                     )+
-                    _ => Self::UnknownType
+                    _ => unreachable!()
                 }
             }
         }
 
-        impl From<Standard> for u8 {
-            fn from(value: Standard) -> Self {
+
+        impl From<ApplicationRecordType> for u8 {
+            fn from(value: ApplicationRecordType) -> Self {
                 value as u8
             }
         }
     };
 }
 
-standard_record_types! {
+application_record_types! {
     (BeginRequest, 1);
     (AbortRequest, 2);
     (EndRequest, 3);
@@ -40,22 +42,19 @@ standard_record_types! {
     (Stdout, 6);
     (Stderr, 7);
     (Data, 8);
-    (GetValues, 9);
-    (GetValuesResult, 10);
-    (UnknownType, 11);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordType {
-    Standard(Standard),
-    Custom(Custom),
+    Application(ApplicationRecordType),
+    Management(ManagementRecordType),
 }
 
 impl From<u8> for RecordType {
     fn from(value: u8) -> Self {
         match value {
-            1..=11 => Self::Standard(value.into()),
-            _ => Self::Custom(value.into()),
+            1..=8 => Self::Application(value.into()),
+            _ => Self::Management(value.into()),
         }
     }
 }
@@ -63,69 +62,73 @@ impl From<u8> for RecordType {
 impl From<RecordType> for u8 {
     fn from(value: RecordType) -> Self {
         match value {
-            RecordType::Standard(std) => std as u8,
-            RecordType::Custom(custom) => custom.record_type,
+            RecordType::Application(std) => std as u8,
+            RecordType::Management(custom) => custom.record_type,
         }
     }
 }
 
-impl From<Standard> for RecordType {
-    fn from(value: Standard) -> Self {
-        RecordType::Standard(value)
+impl From<ApplicationRecordType> for RecordType {
+    fn from(value: ApplicationRecordType) -> Self {
+        RecordType::Application(value)
     }
 }
 
-impl From<Custom> for RecordType {
-    fn from(value: Custom) -> Self {
-        RecordType::Custom(value)
+impl From<ManagementRecordType> for RecordType {
+    fn from(value: ManagementRecordType) -> Self {
+        RecordType::Management(value)
     }
 }
 
-impl PartialEq<RecordType> for Standard {
+impl PartialEq<RecordType> for ApplicationRecordType {
     fn eq(&self, other: &RecordType) -> bool {
-        RecordType::Standard(*self) == *other
+        RecordType::Application(*self) == *other
     }
 }
 
-impl PartialEq<RecordType> for Custom {
+impl PartialEq<RecordType> for ManagementRecordType {
     fn eq(&self, other: &RecordType) -> bool {
-        RecordType::Custom(*self) == *other
+        RecordType::Management(*self) == *other
     }
 }
 
-impl PartialEq<Standard> for RecordType {
-    fn eq(&self, other: &Standard) -> bool {
-        *self == RecordType::Standard(*other)
+impl PartialEq<ApplicationRecordType> for RecordType {
+    fn eq(&self, other: &ApplicationRecordType) -> bool {
+        *self == RecordType::Application(*other)
     }
 }
 
-impl PartialEq<Custom> for RecordType {
-    fn eq(&self, other: &Custom) -> bool {
-        *self == RecordType::Custom(*other)
+impl PartialEq<ManagementRecordType> for RecordType {
+    fn eq(&self, other: &ManagementRecordType) -> bool {
+        *self == RecordType::Management(*other)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Custom {
+pub struct ManagementRecordType {
     record_type: u8,
 }
 
-impl Custom {
+impl ManagementRecordType {
     pub const fn new(n: u8) -> Self {
         assert!(n > 11);
 
+        Self::new_unchecked(n)
+    }
+
+    pub(crate) const fn new_unchecked(n: u8) -> Self {
         Self { record_type: n }
     }
 }
 
-impl From<u8> for Custom {
+impl From<u8> for ManagementRecordType {
     fn from(value: u8) -> Self {
-        Custom::new(value)
+        ManagementRecordType::new(value)
     }
 }
 
-impl From<Custom> for u8 {
-    fn from(value: Custom) -> Self {
+impl From<ManagementRecordType> for u8 {
+    fn from(value: ManagementRecordType) -> Self {
         value.record_type
     }
 }

@@ -92,6 +92,7 @@ impl EncodeChunk for Data {
                 let mut handle = inner.take(buf.remaining_mut() as u64);
                 let mut writer = buf.writer();
 
+                // TODO: handle this unwrap.
                 let n = std::io::copy(&mut handle, &mut writer).unwrap();
 
                 if n == 0 {
@@ -105,7 +106,9 @@ impl EncodeChunk for Data {
 }
 
 impl Decode for Data {
-    fn decode(src: BytesMut) -> Result<Data, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<Data, Self::Error> {
         Ok(Data {
             kind: Kind::ByteSlice(src.freeze()),
         })

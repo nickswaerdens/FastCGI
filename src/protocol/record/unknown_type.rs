@@ -47,7 +47,9 @@ impl EncodeRecord for UnknownType {
 }
 
 impl Decode for UnknownType {
-    fn decode(src: BytesMut) -> Result<Self, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<Self, Self::Error> {
         Self::decode(src)
     }
 }

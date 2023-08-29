@@ -1,8 +1,5 @@
-use crate::protocol::{
-    meta::DynRequestMetaExt,
-    record::{
-        begin_request::Role, params, Data, GetValues, Params, ParamsBuilder, Stdin, StreamChunker,
-    },
+use crate::protocol::record::{
+    begin_request::Role, params, Data, Params, ParamsBuilder, Stdin, StreamChunker,
 };
 use std::time::SystemTime;
 
@@ -81,8 +78,12 @@ pub enum RoleTyped<T: FilterType> {
     Filter(T),
 }
 
-impl RoleTyped<Data> {
-    pub(crate) fn map<T: FilterType>(self, f: fn(Data) -> T) -> RoleTyped<T> {
+impl<T: FilterType> RoleTyped<T> {
+    pub(crate) fn map<F, U>(self, f: F) -> RoleTyped<U>
+    where
+        F: FnOnce(T) -> U,
+        U: FilterType,
+    {
         match self {
             Self::Responder => RoleTyped::Responder,
             Self::Authorizer => RoleTyped::Authorizer,
@@ -234,16 +235,5 @@ impl Default for RequestBuilder<Init> {
             stdin: None,
             state: Init,
         }
-    }
-}
-
-enum ManagementRequest {
-    GetValues(GetValues),
-    Custom(Box<dyn DynRequestMetaExt>),
-}
-
-impl From<Box<dyn DynRequestMetaExt>> for ManagementRequest {
-    fn from(value: Box<dyn DynRequestMetaExt>) -> Self {
-        ManagementRequest::Custom(value)
     }
 }

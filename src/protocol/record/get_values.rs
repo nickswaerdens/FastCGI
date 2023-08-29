@@ -24,7 +24,9 @@ impl EncodeRecord for GetValues {
 }
 
 impl Decode for GetValues {
-    fn decode(src: BytesMut) -> Result<Self, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<Self, Self::Error> {
         Ok(GetValues(NameValuePairs::decode(src, Self::validate)?))
     }
 }
@@ -49,7 +51,9 @@ impl EncodeRecord for GetValuesResult {
 }
 
 impl Decode for GetValuesResult {
-    fn decode(src: BytesMut) -> Result<Self, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<Self, Self::Error> {
         Ok(GetValuesResult(NameValuePairs::decode(
             src,
             Self::validate,

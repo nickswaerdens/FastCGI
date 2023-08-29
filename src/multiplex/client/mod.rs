@@ -1,9 +1,11 @@
 mod config;
+mod management;
 mod pending;
 
 use crate::{
     protocol::{
-        record::{ApplicationRecord, Record, Standard},
+        meta::{self},
+        record::{ApplicationRecord, ApplicationRecordType, Decode, ManagementRecord, Record},
         transport::{DecodeCodecError, FastCgiCodec, Frame},
     },
     request::Request,
@@ -27,8 +29,9 @@ use tokio::{
 };
 use tokio_util::{codec::Framed, sync::PollSender};
 
+/// Commands take priority over records.
 #[derive(Debug)]
-pub(crate) enum PriorityCommand {
+pub(crate) enum Command {
     Register {
         tx_id: oneshot::Sender<Option<ApplicationId>>,
         tx: mpsc::Sender<Frame>,
@@ -41,8 +44,10 @@ pub(crate) enum PriorityCommand {
 /// Client is cheap to clone and uses Arc internally.
 #[derive(Debug, Clone)]
 pub struct Client {
+    tx_command: mpsc::Sender<Command>,
+    tx_management: mpsc::Sender<ManagementRecord>,
     tx: mpsc::Sender<ApplicationRecord>,
-    tx_priority: mpsc::Sender<PriorityCommand>,
+
     shared: Arc<Shared>,
 }
 
@@ -56,8 +61,9 @@ struct Shared {
 struct ClientReceiver<T> {
     #[pin]
     transport: Framed<T, FastCgiCodec>,
+    rx_command: mpsc::Receiver<Command>,
+    rx_management: mpsc::Receiver<ManagementRecord>,
     rx: mpsc::Receiver<ApplicationRecord>,
-    rx_priority: mpsc::Receiver<PriorityCommand>,
 
     #[pin]
     pending: Slab<mpsc::Sender<Frame>>,
@@ -99,14 +105,17 @@ impl Client {
             pending_config,
         } = config;
 
+        let (tx_command, rx_command) = mpsc::channel(send_channel_limit);
+        let (tx_management, rx_management) = mpsc::channel(send_channel_limit);
         let (tx, rx) = mpsc::channel(send_channel_limit);
-        let (tx_priority, rx_priority) = mpsc::channel(send_channel_limit);
 
         tokio::spawn({
             let receiver = ClientReceiver {
                 transport: Framed::new(transport, FastCgiCodec::new()),
+
+                rx_command,
+                rx_management,
                 rx,
-                rx_priority,
 
                 pending: Slab::new(),
                 aborting: VecDeque::new(),
@@ -123,8 +132,9 @@ impl Client {
         });
 
         Self {
+            tx_command,
+            tx_management,
             tx,
-            tx_priority,
             shared: Arc::new(Shared {
                 config: pending_config,
             }),
@@ -137,9 +147,9 @@ impl Client {
     /// request that failed alongside an error.
     pub async fn send(&self, req: Request) -> Result<Pending, (Request, IdAssignError)> {
         let (pending_tx, pending_rx) = mpsc::channel(self.shared.config.recv_channel_limit);
-        let mut tx_priority = PollSender::new(self.tx_priority.clone());
+        let mut tx_command = PollSender::new(self.tx_command.clone());
 
-        match RegisterId::new(&mut tx_priority, pending_tx).await {
+        match RegisterId::new(&mut tx_command, pending_tx).await {
             Ok(id) => {
                 let tx = PollSender::new(self.tx.clone());
 
@@ -147,13 +157,21 @@ impl Client {
                     id,
                     req,
                     tx,
-                    tx_priority,
+                    tx_command,
                     pending_rx,
                     &self.shared.config,
                 ))
             }
             Err(err) => Err((req, err)),
         }
+    }
+
+    pub async fn send_management<R>(&self, req: R) -> Result<R::Dual, ()>
+    where
+        R: meta::ManagementRecord<Endpoint = meta::Client>,
+        R::Dual: Decode,
+    {
+        todo!()
     }
 }
 
@@ -172,10 +190,10 @@ where
 
         let mut iteration_count = 0;
         loop {
-            // Handle priority commands.
-            if let Poll::Ready(Some(command)) = this.rx_priority.poll_recv(cx) {
+            // Handle commands.
+            if let Poll::Ready(Some(command)) = this.rx_command.poll_recv(cx) {
                 match command {
-                    PriorityCommand::Register { tx_id, tx } => {
+                    Command::Register { tx_id, tx } => {
                         if *this.state == State::Running
                             && (this.pending.len() as u16) < u16::MAX - 1
                         {
@@ -192,7 +210,7 @@ where
                             let _ = tx_id.send(None);
                         }
                     }
-                    PriorityCommand::Abort { id } => {
+                    Command::Abort { id } => {
                         let key = (id.get() - 1) as usize;
 
                         if this.pending.contains(key) {
@@ -202,58 +220,70 @@ where
                     }
                 }
             }
-            // Send abort requests to the transport.
-            else if !this.aborting.is_empty()
-                && transport
-                    .as_mut()
-                    .poll_ready(cx)
-                    .map_err(ClientReceiverError::from_sink_error)?
-                    .is_ready()
+            // if transport is ready, check if we need to send anything.
+            else if transport
+                .as_mut()
+                .poll_ready(cx)
+                .map_err(ClientReceiverError::from_sink_error)?
+                .is_ready()
             {
-                if let Some(id) = this.aborting.swap_remove_back(0) {
-                    let record = ApplicationRecord::abort(id);
-
-                    transport
-                        .as_mut()
-                        .start_send(record.with_padding(this.config.padding))
-                        .map_err(ClientReceiverError::from_sink_error)?;
-                }
-            }
-            // Send records from requests we're receiving to the transport.
-            else if *this.state == State::Running
-                && transport
-                    .as_mut()
-                    .poll_ready(cx)
-                    .map_err(ClientReceiverError::from_sink_error)?
-                    .is_ready()
-            {
-                match this.rx.poll_recv(cx) {
-                    Poll::Ready(Some(record)) => {
-                        if !this.pending.contains((record.id.get() - 1) as usize) {
-                            continue;
-                        }
+                // Abort requests first.
+                if !this.aborting.is_empty() {
+                    if let Some(id) = this.aborting.swap_remove_back(0) {
+                        let record = ApplicationRecord::abort(id);
 
                         transport
                             .as_mut()
                             .start_send(record.with_padding(this.config.padding))
                             .map_err(ClientReceiverError::from_sink_error)?;
+                    }
+                }
+                // then send management requests.
+                else if let Poll::Ready(inner) = this.rx_management.poll_recv(cx) {
+                    match inner {
+                        Some(record) => {
+                            transport
+                                .as_mut()
+                                .start_send(record.with_padding(this.config.padding))
+                                .map_err(ClientReceiverError::from_sink_error)?;
+                        }
+                        None => {
+                            // TODO: handle this case.
+                        }
+                    }
+                }
+                // lastly send application requests.
+                else if *this.state == State::Running {
+                    match this.rx.poll_recv(cx) {
+                        Poll::Ready(Some(record)) => {
+                            if !this.pending.contains((record.id.get() - 1) as usize) {
+                                continue;
+                            }
 
-                        // Yield if frames have been send for a while.
-                        // Let the task know that we're immediately ready to progress more.
-                        iteration_count += 1;
-                        if iteration_count == yield_sender_after {
-                            cx.waker().wake_by_ref();
+                            transport
+                                .as_mut()
+                                .start_send(record.with_padding(this.config.padding))
+                                .map_err(ClientReceiverError::from_sink_error)?;
+
+                            // Yield if frames have been send for a while.
+                            // Let the task know that we're immediately ready to progress more.
+                            iteration_count += 1;
+                            if iteration_count == yield_sender_after {
+                                cx.waker().wake_by_ref();
+                                break;
+                            }
+                        }
+                        Poll::Ready(None) => {
+                            *this.state = State::StoppedSending;
+                            break;
+                        }
+                        Poll::Pending => {
+                            // nothing to do.
                             break;
                         }
                     }
-                    Poll::Ready(None) => {
-                        *this.state = State::StoppedSending;
-                        break;
-                    }
-                    Poll::Pending => {
-                        // nothing to do.
-                        break;
-                    }
+                } else {
+                    break;
                 }
             }
             // No more work to do, transport is busy, or we need to yield.
@@ -305,7 +335,7 @@ where
                         let key = (id - 1) as usize;
 
                         if this.pending.contains(key) {
-                            let tx = if record_type == Standard::EndRequest {
+                            let tx = if record_type == ApplicationRecordType::EndRequest {
                                 Cow::Owned(this.pending.remove(key))
                             } else {
                                 Cow::Borrowed(unsafe { this.pending.get_unchecked(key) })

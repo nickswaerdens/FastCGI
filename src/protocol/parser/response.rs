@@ -2,7 +2,9 @@ use super::defrag::{Defrag, MaximumStreamSizeExceeded};
 use crate::{
     build_enum_with_from_impls,
     protocol::{
-        record::{Decode, DecodeError, EndRequest, RecordType, Standard, Stderr, Stdout},
+        record::{
+            ApplicationRecordType, Decode, DecodeError, EndRequest, RecordType, Stderr, Stdout,
+        },
         transport::Frame,
     },
 };
@@ -49,16 +51,24 @@ impl Transition {
         assert!(id > 0);
 
         let transition = match (record_type, payload.is_empty()) {
-            (RecordType::Standard(Standard::Stdout), false) => Transition::ParseStdout(payload),
-            (RecordType::Standard(Standard::Stdout), true) => Transition::EndOfStdout,
+            (RecordType::Application(ApplicationRecordType::Stdout), false) => {
+                Transition::ParseStdout(payload)
+            }
+            (RecordType::Application(ApplicationRecordType::Stdout), true) => {
+                Transition::EndOfStdout
+            }
 
-            (RecordType::Standard(Standard::Stderr), false) => Transition::ParseStderr(payload),
-            (RecordType::Standard(Standard::Stderr), true) => Transition::EndOfStderr,
+            (RecordType::Application(ApplicationRecordType::Stderr), false) => {
+                Transition::ParseStderr(payload)
+            }
+            (RecordType::Application(ApplicationRecordType::Stderr), true) => {
+                Transition::EndOfStderr
+            }
 
-            (RecordType::Standard(Standard::EndRequest), false) => {
+            (RecordType::Application(ApplicationRecordType::EndRequest), false) => {
                 Transition::ParseEndRequest(payload)
             }
-            (RecordType::Standard(Standard::EndRequest), true) => {
+            (RecordType::Application(ApplicationRecordType::EndRequest), true) => {
                 return Err(ParseResponseError::DecodeError(
                     DecodeError::InsufficientDataInBuffer,
                 ))
@@ -71,7 +81,7 @@ impl Transition {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Parser {
     inner: State,
 
@@ -81,14 +91,14 @@ pub(crate) struct Parser {
 }
 
 impl Parser {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(max_total_payload: usize) -> Self {
         Self {
             inner: State::Std {
                 out: Inner::Init,
                 err: Inner::Init,
             },
-            stdout_defrag: Defrag::default(),
-            stderr_defrag: Defrag::default(),
+            stdout_defrag: Defrag::new(max_total_payload),
+            stderr_defrag: Defrag::new(max_total_payload),
         }
     }
 
@@ -145,10 +155,9 @@ impl Parser {
                 },
                 Transition::EndOfStdout,
             ) => {
-                let stdout = self
-                    .stdout_defrag
-                    .handle_end_of_stream()
-                    .map(Stdout::decode)
+                let payload = self.stdout_defrag.handle_end_of_stream();
+                let stdout = (!payload.is_empty())
+                    .then_some(Stdout::decode(payload))
                     .transpose()?;
 
                 self.inner = State::Std {
@@ -210,10 +219,9 @@ impl Parser {
                 },
                 Transition::EndOfStderr,
             ) => {
-                let stderr = self
-                    .stderr_defrag
-                    .handle_end_of_stream()
-                    .map(Stderr::decode)
+                let payload = self.stderr_defrag.handle_end_of_stream();
+                let stderr = (!payload.is_empty())
+                    .then_some(Stderr::decode(payload))
                     .transpose()?;
 
                 self.inner = State::Std {

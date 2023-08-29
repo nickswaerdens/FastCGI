@@ -1,6 +1,5 @@
 use std::num::NonZeroU16;
 
-mod macros;
 pub mod multiplex;
 pub mod protocol;
 pub mod request;

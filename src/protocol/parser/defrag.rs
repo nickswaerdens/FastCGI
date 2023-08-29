@@ -2,10 +2,7 @@ use bytes::{BufMut, BytesMut};
 
 /// Temporarily stores received stream frames of the same record type.
 ///
-/// The default maximum size of the payload is 64MB (1024 full frames). This can be adjusted
-/// with `with_max_payload_size`. As the project is at an early stage, it's recommended to
-/// manually set the maximum to avoid unexpected changes to the maximum payload size in the
-/// future.
+/// The default maximum size of the payload is 64MB (1024 full frames).
 #[derive(Debug)]
 pub(crate) struct Defrag {
     payloads: Vec<BytesMut>,
@@ -14,13 +11,12 @@ pub(crate) struct Defrag {
 }
 
 impl Defrag {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn with_max_payload_size(mut self, n: usize) -> Self {
-        self.max_total_payload = n;
-        self
+    pub(crate) fn new(max_total_payload: usize) -> Self {
+        Self {
+            payloads: Vec::new(),
+            max_total_payload,
+            current_total_payload: 0,
+        }
     }
 
     pub(crate) fn insert_payload(
@@ -42,9 +38,9 @@ impl Defrag {
         Ok(())
     }
 
-    pub(crate) fn handle_end_of_stream(&mut self) -> Option<BytesMut> {
+    pub(crate) fn handle_end_of_stream(&mut self) -> BytesMut {
         if self.payloads.is_empty() {
-            return None;
+            return BytesMut::new();
         }
 
         // Should this much space be reserved beforehand?
@@ -56,20 +52,11 @@ impl Defrag {
             buffer.put(payload);
         }
 
-        Some(buffer)
+        buffer
     }
 }
 
-impl Default for Defrag {
-    fn default() -> Self {
-        Self {
-            payloads: Vec::new(),
-            max_total_payload: 0x4000000, // 64 MB
-            current_total_payload: 0,
-        }
-    }
-}
-
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MaximumStreamSizeExceeded {
     size: usize,
     limit: usize,

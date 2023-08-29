@@ -98,7 +98,9 @@ impl EncodeRecord for BeginRequest {
 }
 
 impl Decode for BeginRequest {
-    fn decode(src: BytesMut) -> Result<BeginRequest, DecodeError> {
+    type Error = DecodeError;
+
+    fn decode(src: BytesMut) -> Result<BeginRequest, Self::Error> {
         Self::decode(src)
     }
 }

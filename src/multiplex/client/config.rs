@@ -24,16 +24,7 @@ pub struct PendingConfig {
     pub recv_channel_limit: usize,
     pub timeout: Duration,
     pub yield_at: usize,
-}
-
-impl PendingConfig {
-    pub fn new(recv_channel_limit: usize, timeout: Duration, yield_at: usize) -> Self {
-        Self {
-            recv_channel_limit,
-            timeout,
-            yield_at,
-        }
-    }
+    pub max_stream_payload_size: usize,
 }
 
 impl Default for Config {
@@ -62,6 +53,7 @@ impl Default for PendingConfig {
             recv_channel_limit: 32,
             timeout: Duration::from_secs(60),
             yield_at: 32,
+            max_stream_payload_size: 0x4000000, // 64 MB
         }
     }
 }

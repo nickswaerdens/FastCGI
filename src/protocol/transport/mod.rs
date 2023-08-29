@@ -1,6 +1,6 @@
 mod frame;
 
-use super::record::{EncodeRecordError, Header, Padding, Record};
+use super::record::{EncodeRecordError, Header, HeaderDecoded, Padding, Record};
 use crate::HEADER_SIZE;
 use bytes::{Buf, BufMut, BytesMut};
 pub(crate) use frame::*;
@@ -27,7 +27,12 @@ impl FastCgiCodec {
 
     /// Decodes a header and reserves space to fit the entire record body, including padding bytes.
     fn decode_header(src: &mut BytesMut) -> Result<Option<(Header, u16)>, DecodeCodecError> {
-        if let Some((header, content_length, padding_length)) = Header::decode(src)? {
+        if let Some(HeaderDecoded {
+            header,
+            content_length,
+            padding_length,
+        }) = Header::decode(src)?
+        {
             // Grow the buffer for the expected data, plus padding.
             src.reserve(content_length as usize + padding_length as usize);
 
